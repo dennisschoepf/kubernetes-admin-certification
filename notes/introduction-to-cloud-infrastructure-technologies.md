@@ -533,3 +533,18 @@ By combining IaC and versioned software we can achieve reproducible build and re
   - OSS tool as an alternative to the other two commercial solutions
   - Creates VMs on top of IaaS, configures them and deploys applications in these VMs
   - Uses deployment manifests to create stemcells (versioned OS image with preinstalled utilities), releases (collection of config properties, templates, scripts on top of stemcell), deployments (collection of VMs built from stemcells), and the BOSH director (central orchestrator component)
+
+  ## Single Point of Truth / KV stores in a cluster
+
+  For distributed and dynamically scalabe environments there needs to be a central key-value storage where specific configuration values lie.
+
+  The solutions are mostly based around being HTTP-accessible, offering REST APIs. Examples are:
+  - etcd
+    - OSS distributed key-value pair storage which uses the Raft consensus algorithm for communication
+    - Can run in distributed cluster mode or standalone, in cluster mode it gracefully handles leader election and can tolerate machine failures including the current leader
+    - Used in Kubernetes, rook, OpenStack, ...
+    - Stores connections, configuration, bootstrapping keys as well as metadata for service discovery
+  - Consul KV
+    - In addition to being a distributed KV store it also serves as service discovery mechanism in conjunction with DNS or HTTP, Health Checks and multi-datacenter support
+    - Can be configured on a single node, but multi-node is recommended (uses Raft consensus as well)
+    - Provides traffic management by leveraging Blue/Green or Canary patterns
