@@ -498,3 +498,38 @@ The practice of configuring and enabling of various development workflows such a
 - Tools include: Helm, Argo, GitLab, Flux, CircleCi, Jenkins X
 
 ## Configuration Management
+
+Automating provisioning by utilizing Infrastructure as Code. Includes tools to define the desired state of systems in an automated way like Ansible, Chef, Puppet, Salt.
+
+### Ansible
+
+OSS agentless (maintenance tasks are limited to a single management node) YAML-based tool that works through SSH. Playbooks can be created and executed from the management node (e.g. a desktop computer with access to some servers).
+
+### Puppet
+
+OSS agent/server configuration tool meaning puppet has to be installed on each management and target node. Puppet server only available on Unix-based systems. Uses catalog and manifest files. Due to its architecture it is able to do centralized reporting, live system management and it has ready-to-use modules with Puppet Forge.
+
+### Chef
+
+Supports both client/server and clientless. There is also a chef workstation where one can develop cookbooks and recipes, sync chef-repo, run CLI tools, configure policies and roles. Cookbooks consisting of recipes are used for configuration.
+
+### Salt
+
+Developed by VMWare. Available in both client/server as well as agentless mode. Management server called "master" and client servers called "minions". Master relays commands & configuration to the minions and receives results from them.
+
+## Build & Release
+
+By combining IaC and versioned software we can achieve reproducible build and release environments. Tools that try to achieve this are:
+
+- Terraform
+  - Machines, VMs, network, switches, ... are treated as resources exposed by providers
+  - Providers are available in different stacks (Iaas, PaaS, SaaS)
+  - Allows to build, change and version infrastructure
+  - Can manage existing and customized providers and scale from a single application to a datacenter
+- Cloudformation
+  - AWS IaC solution (YAML/JSON) or on the CLI, there are CDKs to interface with different programming languages
+  - Allows for Dependency Management, Safety controls, and previewing environment changes
+- BOSH
+  - OSS tool as an alternative to the other two commercial solutions
+  - Creates VMs on top of IaaS, configures them and deploys applications in these VMs
+  - Uses deployment manifests to create stemcells (versioned OS image with preinstalled utilities), releases (collection of config properties, templates, scripts on top of stemcell), deployments (collection of VMs built from stemcells), and the BOSH director (central orchestrator component)
