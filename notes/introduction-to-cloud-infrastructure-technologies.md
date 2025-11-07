@@ -534,17 +534,78 @@ By combining IaC and versioned software we can achieve reproducible build and re
   - Creates VMs on top of IaaS, configures them and deploys applications in these VMs
   - Uses deployment manifests to create stemcells (versioned OS image with preinstalled utilities), releases (collection of config properties, templates, scripts on top of stemcell), deployments (collection of VMs built from stemcells), and the BOSH director (central orchestrator component)
 
-  ## Single Point of Truth / KV stores in a cluster
+## Single Point of Truth / KV stores in a cluster
 
-  For distributed and dynamically scalabe environments there needs to be a central key-value storage where specific configuration values lie.
+For distributed and dynamically scalabe environments there needs to be a central key-value storage where specific configuration values lie.
 
-  The solutions are mostly based around being HTTP-accessible, offering REST APIs. Examples are:
-  - etcd
-    - OSS distributed key-value pair storage which uses the Raft consensus algorithm for communication
-    - Can run in distributed cluster mode or standalone, in cluster mode it gracefully handles leader election and can tolerate machine failures including the current leader
-    - Used in Kubernetes, rook, OpenStack, ...
-    - Stores connections, configuration, bootstrapping keys as well as metadata for service discovery
-  - Consul KV
-    - In addition to being a distributed KV store it also serves as service discovery mechanism in conjunction with DNS or HTTP, Health Checks and multi-datacenter support
-    - Can be configured on a single node, but multi-node is recommended (uses Raft consensus as well)
-    - Provides traffic management by leveraging Blue/Green or Canary patterns
+The solutions are mostly based around being HTTP-accessible, offering REST APIs. Examples are:
+
+- etcd
+  - OSS distributed key-value pair storage which uses the Raft consensus algorithm for communication
+  - Can run in distributed cluster mode or standalone, in cluster mode it gracefully handles leader election and can tolerate machine failures including the current leader
+  - Used in Kubernetes, rook, OpenStack, ...
+  - Stores connections, configuration, bootstrapping keys as well as metadata for service discovery
+- Consul KV
+  - In addition to being a distributed KV store it also serves as service discovery mechanism in conjunction with DNS or HTTP, Health Checks and multi-datacenter support
+  - Can be configured on a single node, but multi-node is recommended (uses Raft consensus as well)
+  - Provides traffic management by leveraging Blue/Green or Canary patterns
+
+## Tools for Debugging, Logging, Monitoring
+
+Native Tools:
+
+- strace, tcpdump, GDB, syslog, ...
+
+Container-Native Tools:
+
+- `docker inspect`, `docker logs`, `docker stats`, `docker top`
+
+3rd-party tools:
+
+- Sysdig (Monitor/Secure) with agents on all nodes to capture low-level system info (Kubernetes-aware)
+- cAdvisor to collect resource usage and performance metrics (OSS), which can run as a docker container that hosts a site to show live statistics, also exposes stats for Prometheus
+- `fluentd` an OSS data collector that can ingest from a variety of sources, mostly as JSON, has over 500 connector plugins, can run with `docker run --log-driver=fluentd`
+- ElasticSearch (partly OSS solution) can index a variety of data
+- Datadog as a paid solution, Prometheus as an OSS solution
+  - Prometheus Server as central retrieval point and data store
+  - Pull metrics with jobs and exporters
+  - Grafana for visualization
+  - Push Alerts with `Alertmanager`
+- Other Tools: OpenTelemetry
+
+## Service Mesh
+
+- Services mesh is a network communication layer for microservices
+- Decouples communication so that timeouts, circuit breakers are possible outside of the application code
+
+### Features
+
+- Enables reliable communication between service instances
+- Circuit Breakers so that traffic to unhealthy services is restricted
+- Routes HTTP requests to specific instances
+- Can automatically retry and time-out requests
+- Service Discovery (e.g. finding healthy & available services)
+- Monitors latency, traffic flow and access logs
+- Authentication and Authorization of requests
+- Allows for TLS encryption
+
+Service Meshes commonly consist of two planes: Data Plane (implements features) and Control Plane (controls/sets features)
+
+### Tools
+
+- Consul (Hashicorp, partly OSS), can be used with Helm, uses the Envoy Proxy
+- Envoy (OSS), runs alongside the application code
+- Istio (OSS), uses the Envoy proxy, pluggable extensions for policy enforcement and telemetry generation
+- Linkerd (OSS), does not handle ingress traffic into the cluster by itself, but suppports (nginx, traefik, ...)
+- Traefik Mesh (OSS), relatively simple solution, sidecar architecture
+
+## Distributed Tracing
+
+Can be implemented e.g. with OpenTelemetry or Elastic APM. Allows for visibility of the time it takes to execute certain code paths. Jaeger is another option.
+
+## Choosing the right stack
+
+- Security (regulations, audits, data access, privacy, authorization, multi-tenancy)
+- Cost (monitor cost, track usage, cost when not running)
+- Vendor-Lock-In (the more specific the solution, the more lock-in), err on the side of OSS/readily available resources (e.g. not Firestore or DynamoDB but Postgres, no Serverless Functions (depends))
+- Resistance when migrating from On-Premise (if applicable)
