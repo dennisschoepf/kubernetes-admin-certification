@@ -137,3 +137,44 @@
 - `kubectl` (installed through `minikube` and accessible via `minikube kubectl`)
 - Hypervisor or container runtime in the following order (first one is used, unless driver is specified): `docker`, `kvm2`, `podman`, `vmware`, `virtualbox`
 - Internet connection on first run (fetch packages, etc.)
+
+#### Working with the cluster
+
+- CLI `kubectl`
+  - Can be installed separately and have a different version to Kubernetes (although recommended to keep cloase)
+  - Has a configuration file, where server, cluster name user, certificates, ... are stored
+- Web UI `Kubernetes Dashboard`
+  - Add-On. Uses `metrics-server` to ingest data
+- API Server (HTTP)
+  - `clusterrole` has to be setup to allow `api-!ccess-root` (RBAC)
+  - Either through kubectl proxy or with authenticated (Bearer) requests (`kubectl create token default`, `default` is the service account)
+
+## Building Blocks
+
+- Kubernetes Object Model: Representing different persistent entities in the cluster
+- Entities describe:
+  - What applications we are running
+  - The nodes on which the containers are deployed
+  - Application Resource Consumption
+  - Policies (Restart/Upgrade/Fault Tolerance, Ingress/Egress, Access Control)
+- For each object the intended state is described in `spec`
+- Kubernetes manages the `status` section (actual state of the object), control plane does the work of getting to the status
+- Other fields are `apiVersion`, `kind`, `metadata`, sometimes `spec` is not but substituted present with `stringData` and `data`
+
+### Nodes
+
+- Virtual identites assigned by Kubernetes to the systems part (VM, Bare-Metal, Containers)
+- Each node has a `kubelet` and `kube-proxy` and hosts a container runtime
+- Two types of nodes: Control Plane Node and Worker Node
+- Node identities are created during bootstrapping
+- Can be distributed across different networks
+
+### Namespaces
+
+- Roughly translate to virtual subclusters
+- Can be used to achieve multi-tenancy (users, teams, applications, tiers, regions)
+- Resource Quotas can be used to limit resources consumed within namespaces
+
+### Pods
+
+- TODO
