@@ -177,4 +177,230 @@
 
 ### Pods
 
-- TODO
+- Smallest workload object and the unit of deployment in Kubernetes
+- Represents a single instance of an application
+- Can consist of one or more containers with volumes that are all on the same host, the same network namespace and have access to the same external storage
+- Are ephemeral and can not self-heal (controllers/operators are needed for that)
+- The specification of a pod is either in a standalone manifest or in the controllers manifest if managed by that
+- Can be ran with `kubectl create/apply -f pod.yaml` or with CLI arguments (save to file with `kubectl run ... > pod.yaml`)
+- Important commands: `apply`, `get pods`, `get pod -o yaml/json`, `describe pod`, `delete pod`
+
+### Labels
+
+- Key-Value pairs attached to Kubernetes objects (Pods, ReplicaSets, Nodes, Namespaces, Volumes)
+- Used to organize and select subset of objects
+- Are used by controllers to logically group together objects
+- Label Selectors can be used to select: e.g. `env=dev` or `env in (dev,staging,prod)`
+
+### ReplicaSet
+
+- Implements replication and self healing for pods and supports equality and set-based selectors
+- Can scale a number of pods to achieve high availability (either manually or by using an autoscaler)
+- Monitors the pods defined for the set and restarts pods if they crashed or otherwise terminated
+- Are complemented by the `Deployment` object
+
+### Deployments
+
+- Provide declarative updates for pods and replica sets
+- Is part of the control plane node controller manager and ensures that the current state matches the desired state of running the application
+- Allows for seamless application updates and rollbacks with a `RollingUpdate` strategy with `rollouts` and `rollbacks`
+- Other strategies are available (e.g. `Recreate`)
+- Direcly manages ReplicaSets for scaling
+- Through pushing updates to the deployment object (e.g. chaging container image) the deployment manages the seamless transition between two ReplicaSets
+- Some operations (container image, port, volumes, mount) trigger a new Revision, other (dynamic) operations (scaling, labelling) do not trigger aan update (and therefore do not change the revision number)
+- After an update the old replicaset is kept as a prior revision to allow for rolling back the deployment
+
+```
+$ kubectl apply -f nginx-deploy.yaml --record
+$ kubectl get deployments
+$ kubectl get deploy -o wide
+$ kubectl scale deploy nginx-deployment --replicas=4
+$ kubectl get deploy nginx-deployment -o yaml
+$ kubectl get deploy nginx-deployment -o json
+$ kubectl describe deploy nginx-deployment
+$ kubectl rollout status deploy nginx-deployment
+$ kubectl rollout history deploy nginx-deployment
+$ kubectl rollout history deploy nginx-deployment --revision=1
+$ kubectl set image deploy nginx-deployment nginx=nginx:1.21.5 --record
+$ kubectl rollout history deploy nginx-deployment --revision=2
+$ kubectl rollout undo deploy nginx-deployment --to-revision=1
+$ kubectl get all -l app=nginx -o wide
+$ kubectl delete deploy nginx-deployment
+$ kubectl get deploy,rs,po -l app=nginx
+```
+
+### DaemonSets
+
+- Are operators designed to manage node agents
+- Resemble ReplicaSet and Deployment operators when managing multiple pod replicas
+- Can enforce a single Pod replica on: per node/all nodes/subset of nodes (ReplicaSet/Deployment have no control over a node)
+- Often used for monitoring, storage, networking, proxy daemons to ensure that they run on all nodes and that a type of Pod runs at all times (e.g. `kube-proxy` or other networking node agents)
+- When a node is added to the cluster a pod is automatically placed on it (by the DaemonSet itself, not the scheduler - but scheduler can be used)
+- On deletion of a daemon set all pod replicas are deleted
+- Can be managed with similar commands as deployement (`rollout`, `get ds`, ...)
+
+### Services
+
+- A container in a cluster is not discoverable per default on does not expose ports to the cluster network
+- Normally done by simply mapping ports in other container hosts
+- In Kubernetes this cant be done, it needs kube-proxy, ip tables, routing rules, dns server and load balancing mechanisms
+- This logic is encapsulated in a Service and is the recommended way to expose a containerized application to the outside
+
+## Authentication, Authorization & Admission Control
+
+Each request goes through these in order:
+
+1. Authentication (based on credentials of API requests)
+2. Authorization (authorizes API requests submitted by the authenticated user)
+3. Admission Controler (software modules that validate/modify user requests)
+
+### Authentication
+
+K8s supports two kinds of users:
+
+- Normal Users (e.g. with user ceritificates, files with username/password, service provider accounts)
+- Service Accounts (in cluster process communication to the API server, mostly created automatically)
+
+These auth methods are possible:
+
+- Anonymous = No Auth
+- X509 client certificates
+- Static token file
+- Bootstrap tokens
+- Service account tokens
+- and openId, custom proxies, webhooks (external)
+
+### Authorization
+
+There are 4 different modes:
+
+1. Node: Specifically for kubelet API requests
+2. ABAC: attribute based access control based policies: e.g: `kind: Policy, spec: { user: "bob" }`
+3. Webhook: Request third party service
+4. RBAC: role based access control `Role` and `ClusterRole`
+
+#### RBAC example
+
+This spec defines a role that can read pods only. A `Role` can only access one namespace. Use `ClusterRole`s to define roles that can act on the cluster as a whole
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+namespace: lfs158
+name: pod-reader
+rules:
+  - apiGroups: [""] # "" indicates the core API group
+resources: ["pods"]
+verbs: ["get", "watch", "list"]
+```
+
+To bind a `ROle` to a user, a `RoleBinding` (or `ClusterRoleBinding` for a `ClusterRole`) has to be created:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-read-access
+  namespace: lfs158
+subjects:
+  - kind: User
+    name: bob
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+### Admission control
+
+- Controllers used so specify granular access control policies
+- Used e.g. for privileged containers, resource quota and other specific data
+- To use it the server has to be started with `enable-admission-plugins` and controller names: `--enable-admission-plugins=NamespaceLifecycle,ResourceQuota,PodSecurity,DefaultStorageClass`
+- Some are enabled by default, external plugins can be used for this as well and run via webhooks
+
+## Services (In-Depth)
+
+- Used to allow for access to standalone applications
+- To access an application a user or another application needs to access a pod
+- Pods are ethemeral, so IP adresses cannot be statically allocated
+- Services logically group pods (with labels and selectors) and define policies to access them
+- E.g. in an application with a database, one service to group all frontend pods and one to group the database pod
+- Services can expose Pods, ReplicaSets, Deployments, DaemonSets and StatefulSets
+- Each service gets an in-cluster IP: `ClusterIP`
+- `targetPort` for explicit mapping, otherwise the port defined in the Pod spec is used
+- Pods each get own IP adresses and service handles forwarding traffic to them
+
+### kube-proxy
+
+- A node agent that watches the API server, it implements the Service configuration
+- It configures iptables so that the API server and other cluster components can access other components
+- Any node can receive external traffic and route it internally with `iptables`
+- Each node has an `iptables` instance that stores complete routing roles for the cluster to ensure redundancy
+
+### Tariff Policies
+
+- Load-Balancing by `iptables` is random by default
+- This does not guarantee that the selected Pod is the most efficient worker
+- Two options: `Cluster` (target all ready endpoints of the service, default), `Local` (isolates only to the same node as the requester or the capturer of inbound external traffic)
+- `Local` falls short, when no available ready endpoint is present and running on the Node
+
+### Service Discovery
+
+There are two methods to discover services:
+
+- Env variables on the node (automatically added by `kubelet`)
+- DNS add-on that allows for resolving domains like: `my-svc.my-namespace.svc.cluster.local`
+
+Behaviour:
+
+- e.g. frontend-svc:80 to access the frontend on port 80
+
+### ServiceType
+
+- `ServiceType` defines if pod is available from: within cluster-only, cluster and external, or maps to an entity inside or outside the cluster
+- `ClusterIP` is the default type to allow access within the cluster
+- `NodePort` can be used to make services available from outside by assigning a high Port on the Node
+- `ExternalIP` where traffic is ingressed into the cluster through an outside IP (the routing has to be configured separately on each node, so that it can be reached by the outside IP)
+- `ExternalName` returns a CNAME record of an externally configred service, used e.g. to make things like db.domain.de accessible to the cluster (even outside the namespace)
+
+#### Deep-Dive: LoadBalancer
+
+- `LoadBalancer` automatically creates NodePorts and ClusterIPs and routes to them
+- Service is exposed at a static port on each worker node
+- The underlying cloud providers load balancer feature is used (if there is none, this ServiceType falls back to NodePort behavior)
+
+#### Deep-Dive: Multi-Port Services
+
+- Allows e.g. to expose HTTP and HTTPS traffic
+- If multiple ports are defined they have to be named `spec.port.name = $NAME`
+
+Example:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: myapp
+  type: NodePort
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 80
+      nodePort: 31080
+    - name: https
+      protocol: TCP
+      port: 8443
+      targetPort: 443
+      nodePort: 31443
+```
+
+#### Deep-Dive: Port Forwarding
+
+- Allows for forwarding a local port to any application port (Service, Deployment, Pod)
+- Used for testing mostly: `kubectl port-forward svc/frontend-svc 8080:80`
