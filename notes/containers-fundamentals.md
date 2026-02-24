@@ -84,3 +84,201 @@ mkdir union # mount point for unionfs
 unionfs dir1/:dir2/ union/ # overlays dir1 and dir2 in union/
 ls union/ # lists all files: f1 f2 f3 f4
 ```
+
+### Full Virtualization vs OS virtualization
+
+VMs are created on top of hypervisors (either bare-metal or on a host) that emulate hardware:
+
+- Extensive overhead to reach physical hardware or the outside world
+- Many layers of abstraction (guest OS, hypervisor, host OS)
+- Allows for many VMs in parallel (depending on hypervisor)
+
+Containers:
+
+- Only virtualize and isolate resources for an application
+- Application is boxed and shipped only with its dependencies by creating a container image
+- Once deployed the container directly runs on the host without a guest OS and hypervisor
+- The host OS must provide isolation and resource allocation via its OS-level virt capabilities, so the user space component of the container must be compatible with the host OS
+
+### Operating System-Level Virtualization
+
+- Refers to a kernel's capability to allow for creation and existence of multiple isolated virtual environments
+- These environments encapsulate running programs and conceal the nature of their enviroment (creating the illusion of a real compouting env)
+- Where a real OS may allow or deny resource access, OS level virt may limit programs access to host OS resources
+- Typically used to limit usage and securely isolate resources shared between multiple users/programs and to separate programs two run in their own virtual environments
+- OS-level virt requires less overhead, but the virtual enviroments are limited to the host OS
+
+There different mechanisms of achieving OS-level virt:
+
+- chroot
+  - changing apparent root directory of a process (chrooted directory)
+  - any process running inside chrooted dir is under the impression that it is running as root
+  - process cannot escape to the real root directory of the operating system
+  - can be used for test environments, isolated dependencies or to recover unbootable systems
+  - only root user may perform chroot, but it does not guard against root attacks
+  - FreeBSD jails can be used to mitigate that (isolate FS, processes and users)
+  - chroot does not isolate users, i/o, network, hostname, ...
+- OpenVZ
+  - only available on linux
+  - allows a host to run isolated virtual instances (=containers)
+  - OpenVZ containers behave like physical hosts (more of a VM/container hybrid)
+  - access to real hardware must be enabled explicitly
+- Linux Containers (LXC)
+  - allow multiplate isolated systems running on one host using cgroups and chroot together with namescpaces
+- systemd-nspawn
+  - can be used to run a simple script or boot an entire Linux-like OS in a container
+  - containers are fully isolated from each other and the host so containers cannot communicate directly with each other
+
+#### chroot
+
+Can be used as follows (with `debootstrap`):
+
+```sh
+sudo mkdir /mnt/chroot-ubuntu-xenial
+sudo debootstrap xenial /mnt/chroot-ubuntu-xenial/ http://archive.ubuntu.com/ubuntu/ # suite target mirror
+sudo chroot /mnt/chroot-ubuntu-xenial/ /bin/bash # chroot to guest os
+```
+
+#### LXC
+
+Can be used as follows (with `lxc`) to create an unprivileged container:
+
+```sh
+cat /etc/subuid # UID map for user
+cat /etc/subgid # GID map for user
+
+# Add user to config file to allow for creation of network devices on the host
+# that then can be used by the containers
+sudo bash -c 'echo user veth lxcbr0 10 >> /etc/lxc/lxc-usernet'
+
+# Create lxc config from template (set permissions to 664)
+cp /etc/lxc/default.conf ~/.config/lxc/default.conf
+
+# Add user uid and gid to the template (change out IDs as necessary)
+echo lxc.idmap = u 0 231072 65536 >> ~/.config/lxc/default.conf
+echo lxc.idmap = g 0 231072 65536 >> ~/.config/lxc/default.conf
+```
+
+Access control management (`acl` package) must be used to correctly set permissions for LXC:
+
+```sh
+setfacl -R -m u:231072:x ~/.local
+```
+
+After that the (unprivileged) container can be created and started and attached to:
+
+````sh
+lxc-create \
+  --template download \
+  --name unpriv-cont-user \
+  -- \
+  --dist ubuntu \
+  --release xenial \
+  --arch amd64
+
+lxc-start -n unpriv-cont-user -d
+
+# List containers
+lxc-ls -f
+
+# Print container info
+lxc-info -n unpriv-cont-user
+
+# Attach to the container
+lxc-attach -n unpriv-cont-user
+
+# Stop the container
+lxc-stop -n unpriv-cont-user
+
+# Destroy the container
+lxc-destroy -n unpriv-cont-user
+``
+
+Privileged containers can be created with `sudo lxc-create ...`
+
+#### systemd-nspawn Containers
+
+These can be managed with `systemd-container`:
+
+```sh
+sudo debootstrap --arch=amd64 stable ~/DebianContainer # prepares the container
+sudo systemd-nspawn -D ~/DebianContainer # creates the container
+
+sudo machinectl list # lists running containers
+sudo machinectl terminate DebianContainer # stops the container
+````
+
+## Container Standards and Runtimes
+
+Often compared to VMs, but on an OS-level and being bound to the host OS. Can run simple scripts but also full-sized web servers. Containers can run anywhere where a container runtime is implemented (Bare-Metal, Virtual Maching, Cloud, ...).
+
+The Open Container Initiative (OCI) container standard is the most prevalent nowadays, `appc` was used, but is slowly merged into OCI.
+
+Container Runtimes implement these standards to allow for host OSs to run containers. When a runtime runs a container they interact with the kernel, build isolation and more.
+
+### OCI Standard
+
+Specifies the configuration, execution env and lifecycle of containers. It e.g. defines:
+
+- Standard operations (start, stop, create, copy, ...)
+- Idempotency
+- Infrastructure agnostic (every OCI runtime can every OCI container)
+- Container properties (state includes version, id, status, pid, bundle, ...)
+- lifecycle events
+- And more like error, warning handling, hooks, ...
+
+It also defines the image formate specification including a manifest, index, (filesystem) layout, filesystem layer, image configuration, conversion so that a container can be created from a OCI-compatible image.
+
+And the latest standard the `Distribution Specification` defines an API protocol standardizing how OCI images and other content is distributed (~ artifact distribution).
+
+### `runc` Runtime
+
+- uses `libcontainer` providing a low level runtime focused on container execution
+- implements OCI and can create and run OCI containers
+- very simple, does not expose an API and no container image management capabilities
+- it can build images but does not provide integrity checks and downloading for images
+- can be used through systemd
+
+### `containerd` Runtime
+
+- simple, but adds storage and transfer of images and attachment to storage and network as features
+- should act as underlying embedded daemon for other systems like Google Cloud, Cloud Foundry, ...
+- supports OCI image spec and runtime by using `runc` under the hood
+- Can be managed with `crictl`
+
+### Docker Runtime
+
+- Feature rich and complex management platform
+- supports container image management to container lifecycle and runtime management
+- implements OCI and provides tools to bundle applications into signed OCI container images
+- also allows for interaction with image registries and manages container throughout the full lifecycle
+- Complex architecture with Docker Engine (a client-server application) running on some Linux distros, MacOS and Windows
+- Docker Engine is compose of the Docker host (running the Docker daemon `dockerd`), a REST API and a Docker client (`docker` CLI)
+- client can run on the same machine as the docker daemon but does not have to
+- the daemon builds, run and distributes docker containers by listening to docker API requests and acting on them
+- the daemon manages images, ontainers, networks and volumes and can work in a distributed way with other daemons
+- docker registries (like Docker Hub) store images, but custom registries can be added
+
+To manage docker as a non root user, we must do the following:
+
+```sh
+sudo groupadd docker
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+### Podman Runtime
+
+- Allows developing, managing and running OCI containers in privileged and unprivileged mode
+- Podman is a daemonless engine providing a REST API service allowing containers to be launched on-demand by remote applications
+- uses `libpod` and `conmon` (monitoring, runs in parallel for each container) under the hood
+- mimicks the Docker CLI and can manage OCI images and run containers
+
+### CRI-O Runtime
+
+- Minimal implementation of the Container Runtime Interface (CRI) (<- Kubernetes interface for OCI runtimes)
+- Lightweight alternative to docker for Kubernetes
+- CRI-O is optimized for Kubernetes (implements CNI)
+- Packed with libraries that pull container images from registries and create container filesystems
+- uses `runc` to run containers (handled by `conmon`)
+- Supports additional container security features and can be managed with `crictl`
