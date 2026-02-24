@@ -282,3 +282,80 @@ newgrp docker
 - Packed with libraries that pull container images from registries and create container filesystems
 - uses `runc` to run containers (handled by `conmon`)
 - Supports additional container security features and can be managed with `crictl`
+
+## Image Operations
+
+- An image is a template for running a container
+- It is a tarball with configuration files including container configuration options and runtime settings
+- Container runtimes load images to run them as containers, multiple containers can be started from one image
+- OCI images can be built by e.g.: `docker build`, `podman build`, `buildah build`
+- Container images can be created from scratch, from another image or from a running container
+- Image consumes storage as it is a bundle of files but can also consume network bandwidth when downloading/uploading from/to registries
+- Container confiugration (base image) is mounted read-only into a container
+- Each added feature to the image is added as an additional layer on the top
+
+### Registries and Repositories
+
+- An image registry is an efficient and secure storage option for images that could be setup in the cloud or on-prem
+- Public registries are also available
+- Examples: Docker Hub, Quay, Amazon ECS, ...
+- Image management tools and container runtimes may provide image caching features to save bandwidth
+
+### Container Image Operations
+
+- Typical image operations would allow users to manage the container image lifecycle from creation to storing it in a registry, to preparing it to be run as a container
+- Only some runtimes support all image operations, most only a subset
+
+#### runc
+
+- Runs containers bundled in the OCI format based on a JSON config file
+- Config file includes host specific settings and might be modified on a different host
+
+#### Docker
+
+Uses the `Dockerfile` as a base, which includes operations that are executed by `dockerd` when building the image. `docker container commit` can be used to create an image from a running conainer. The execution steps in a container build can be shown with `docker image history`.
+
+You can set up a private registry by using a docker image:
+
+```sh
+docker run -d -p 5000:5000 --restart=always --name registry registry:2
+
+# Pull from public repository
+docker image pull alpine:3.14
+
+# Tag the image
+docker image tag alpine:3.14 localhost:5000/myalps
+
+# Push to private registry
+docker image push localhost:5000/myalps
+```
+
+#### Buildah/Podman
+
+Can create images from scratch or with a Dockerfile. They can be OCI images or docker images in a `Containerfile` which exposes the same operations as Docker.
+
+`podman search` and `podman image $ACTION` can be used to handle the images (CLI very similar to Docker)
+
+#### crictl
+
+Does not support image build operations by itself. It allows limited image management (list, inspect, pull, remove).
+
+## Container Operations
+
+A running container is a process on a host running a container runtime.
+
+### runc
+
+`runc run` to run a container. `runc list` to show running containers. The actual lifecycle (restart, ...) could be managed by systemd.
+
+### Docker
+
+`docker create/start/stop/kill/rm` for basic operations. `docker attach` to access standard I/O or `docker exec` to run commands. `pause`/`unpause` are also available. `docker top` to list processes running in a container.
+
+### Podman
+
+Very similar to docker.
+
+### CRI-O
+
+Can be managed with `crictl` which exposes `create/start/run/stop/rm/logs/stats/ps/attach/exec/inspect`.
