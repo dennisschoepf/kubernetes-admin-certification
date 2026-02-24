@@ -404,3 +404,431 @@ spec:
 
 - Allows for forwarding a local port to any application port (Service, Deployment, Pod)
 - Used for testing mostly: `kubectl port-forward svc/frontend-svc 8080:80`
+
+## Application Deployment
+
+### Liveness Probes
+
+- Applications may become unresponsive or delayed
+- `kubelet` can utilize liveness and readiness probes to e.g. force restart or only forward traffic when live
+
+Liveness Probes can be set by defining:
+
+- Commands
+- HTTP Requests
+- TCP probes
+- gRPC probes
+
+#### Command
+
+This spec defines such a probe command. A file is created regularly to check if the container can respond. initialDelaySeconds, failureThreshold and periodSeconds define intervals for the probe.
+
+```yaml
+spec:
+  containers:
+    - name: liveness
+      image: k8s.gcr.io/busybox
+      args:
+        - /bin/sh
+        - -c
+        - touch /tmp/healthy; sleep 30; rm -rf /tmp/healthy; sleep 600
+      livenessProbe:
+        exec:
+          command:
+            - cat
+            - /tmp/healthy
+        initialDelaySeconds: 15
+        failureThreshold: 1
+        periodSeconds: 5
+```
+
+#### HTTP Request
+
+This defines a request to `healthz` for HTTP request liveness
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+    httpHeaders:
+      - name: X-Custom-Header
+        value: Awesome
+  initialDelaySeconds: 15
+  periodSeconds: 5
+```
+
+#### Other methods
+
+- For TCP, a socket is opened, if that succeeds the application is considered healthy
+- gRPC can be used if application implement the gRPC health checking protocol
+
+### Readiness Probes
+
+- In contrast to liveness probes, they define when applications can handle traffic
+- Are defined similar to liveness probes but under `spec...readinessProbe`
+
+### Startup probes
+
+- For legacy applications that need a long time to start up
+- Delay liveness and readiness probes
+
+## Volume Management
+
+- Some data is transient and destroyed with the Pod, for all other data there are volumes
+- Volumes are storage abstractions masking different storage technologies
+- Different container orchestrators had different methods of managing storage
+- CSI is the now standardized interface for storage
+
+The following volume types are supported by K8s:
+
+- emptyDir (empty Volume on the worker node, is deleted when pod is destroyed)
+- hostPath (shared dir with the host, stays up after pod destruction)
+- gcePersistentDisk, awsElasticBlockStore, azureDisk, azureFile for the cloud providers
+- cephfs, nfs for the corresponding file systems
+- iscsi
+- secret
+- configMap (confiugration, shell commands, arguments)
+- persistenVolumeClaim
+
+### PersistentVolume subsystems
+
+- PersistentVolumes provide APIs for users to consume persistent storage (which in turn is managed by admins)
+- `PersistentVolumeClaim` is used to consume a resource type
+- Volumes can be backed by several storage technologies (can be local to the pod, network, but also cloud or distributed storage)
+- PersistentVolumes can be dynamically porivisioned based on a `StorageClass` (contains provisioniers, params to create a persistentVolume)
+
+### PerisistentVolumeClaim
+
+Is a request for storage by the user in four access modes:
+
+- ReadWriteOnce (r/w by a single node)
+- ReadOnlyMany (r by a many nodes)
+- ReadWriteMany (r/w by a many nodes)
+- ReadWriteOncePod (r/w by a single pod)
+
+The volume can be mounted (depending on volume mode) as a directory or a raw block device. OOTB K8s does not support block storage, but that can be implemented with custom resource types.
+
+### Process
+
+1. Admin provisions persistent volumes pool
+2. User requests a claim against the pool
+3. User gets access to storage as soon as claim request is honored
+4. The resource can be used in a pod (access depending on configuration)
+
+## Configuration and Secrets
+
+- Runtime parameters often need to be passed to containers, ConfigMap for configuration, Secrets for sensitive information
+
+### ConfigMaps
+
+Allow for decoupling configuration from the container image and can be created like: `kubectl create configmap my-config --from-literal=key1=value1 --from-literal=key2=value2`, which would lead to something like this in yaml (with key value pairs in `data`):
+
+```yaml
+apiVersion: v1
+data:
+  key1: value1
+  key2: value2
+kind: ConfigMap
+metadata:
+  creationTimestamp: 2024-03-02T07:21:55Z
+  name: my-config
+  namespace: default
+  resourceVersion: "241345"
+  selfLink: /api/v1/namespaces/default/configmaps/my-config
+  uid: d35f0a3d-45d1-11e7-9e62-080027a46057
+```
+
+Creating it from a file is also possible, e.g.: `--from-file=values.properties`. They can then be used in Pods in different ways:
+
+1. As env variables with `containers.envFrom.configMapRef.name` (full config map) or for specific variables
+2. As volumes with `containers.volumeMounts.name=config-volume` (need to set mount path as well)
+
+### Secrets
+
+E.g. for DB passwords, API keys, .... `Secret` encodes the sensitive information in base64 before sharing. The secret is then referenced in other specs without exposing the content itself. Base64 is not encryption only encoding, so Secrets should not be committed to the source code.
+
+Caution: Secret data is stored in plain text in `etcd`, so access to it must be limited or the secret data must be encrypted at rest (must be enabled at the API server level).
+
+We can create Secrets imperatively: `kubectl create secret generic my-password --from-literal=password=mysqlpassword` and show infor about them with: `kubectl describe secret my-password`.
+
+They can also be set declaratively (secret values has to be base64 encoded, e.g. `echo password123 | base64`):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-password
+type: Opaque
+data:
+  password: $BASE64_STRING
+```
+
+You do not need to base64 encode if you use `stringData`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-password
+type: Opaque
+stringData:
+  password: mysqlpassword
+```
+
+Secrets can also be created from a file: `kubectl create secret generic my-file-password --from-file=password.txt` (password.txt just has the single password as content).
+
+Similar to ConfigMaps, secrets can be used with `valueFrom.secretKeyRef` (with `secretKeyRef.name` as the secret name and `secretKeyRef.key` as the specific key inside the referenced secret) in `containers.env`. The secrets can also be mounted as volumes.
+
+## Ingress
+
+Another layer of API abstraction deployed in front of services. Represents a unified method of managing access to applications from the external world.
+
+- Decouples routing rules from applications to allow for updating applications without concern about its external access
+- Ingress configures a Layer 7 HTTP/S load balancer providing: TLS, name based virt hosts, loadbalancing, fanout routing, custom rules
+- With Ingress users do not connect directly to a service, but Ingress decides how requests are forwarded
+
+Name based virtual hosting can be defined as follows:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+  name: virtual-host-ingress
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: blue.example.com
+      http:
+        paths:
+          - backend:
+              service:
+                name: webserver-blue-svc
+                port:
+                  number: 80
+            path: /
+            pathType: ImplementationSpecific
+    - host: green.example.com
+      http:
+        paths:
+          - backend:
+              service:
+                name: webserver-green-svc
+                port:
+                  number: 80
+            path: /
+            pathType: ImplementationSpecific
+```
+
+There is also the option of using Fanout rules to use one Ingress managed load balancer that then fans out to different services:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+  name: fan-out-ingress
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /blue
+            backend:
+              service:
+                name: webserver-blue-svc
+                port:
+                  number: 80
+            pathType: ImplementationSpecific
+          - path: /green
+            backend:
+              service:
+                name: webserver-green-svc
+                port:
+                  number: 80
+            pathType: ImplementationSpecific
+```
+
+### Ingress Controller
+
+- An application watching the Control Plane Node's API server for changes in Ingress resources
+- Also called Ingress Proxy, Service Proxy, Reverse Proxy
+- There are a few different supported controllers: GCE, AWS, Nginx (deprecated), Traefik, ...
+- The actual supported implementation is defined by `spec.ingressClassName`
+
+## Advanced Topics
+
+### Annotations
+
+- Allow for attaching arbitrary metadata to any objects in a K/V format
+- Annotations are not used to identify and select objects (like labels) but for: Build/Release IDs, PR numbers, git branch, author metadata, pointers for logging, monitoring, deployment state, ...
+
+### Quota and Limits management
+
+`ResourceQuota` API resource can be used to fairly divide resources to users. These are the types it supports:
+
+- Compute Resource Quota (total sum of CPU, memory, ... resources for a given namespace)
+- Storage Resource Quota (limit sum of storage resources)
+- Object Count Quota (limit number of Pods, ConfigMaps, PersistentVolumeClaims, ...)
+
+A spec file could look like this:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-resources
+  namespace: myspace
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1Gi
+    limits.cpu: "2"
+    limits.memory: 2Gi
+    requests.nvidia.com/gpu: 4:
+```
+
+There is also a `LimitRange` resource to set ranges for resource limits (e.g. between 500m and 2000m).
+
+In addition to these limits, there are more complex, dynamic scaling solutions:
+
+- HPA (Horizontal Pod Autoscaler) to define rules like: Scale from 2 to 10 replicas if one replica reaches 80% utilization (`kubectl autoscale deploy myapp --min=2 --max=10 --cpu-percent=80`)
+- VPA (Vertical Pod Autoscaler) automatically sets resource requirements based on historical data, current availability and real-time-events
+- Cluster Autoscaler can resize the cluster as a whole to allow for more but also less resources
+
+### Jobs and CronJobs
+
+- A Job creates one more pods to perform a given task
+- It makes sure that a given task is completed successfully (responsible for Pod failures)
+- If a task is complete all pods for this job are terminated automatically
+- Some config options are: `parallelism`, `completions`, `activeDeadlineSeconds`, `backoffLimit`, `ttlSecondsAfterFinished`
+- From 1.4 scheduled Jobs can be run with CronJobs
+
+### StatefulSets
+
+- E.g. for MySQL cluster
+- Very strict on service and storage dependencies
+- Supports scaling, rolling updates, rollbacks
+
+### Custom Resources
+
+- Custom resources are dynamic in nature, and they can appear and disappear in an already running cluster at any time
+- K8s source does not have to be modified when using custom resources
+- Custom Controller is required for a custom resource (interprets resource structure and performs required actions)
+- Two ways of adding: Custom Resource Definitions (programming only for controller), API Aggregation (sit behind API server and programmatically add on requests to the API server)
+
+### Security Contexts
+
+Can be applied by using `Pod Secrity Admission`. To define specific privileges and access control settings (e.g. host user, ...) like this:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 3000
+    fsGroup: 2000
+  volumes:
+    - name: vol
+      emptyDir: {}
+  containers:
+    - name: busy
+      image: busybox:1.28
+      command: ["sh", "-c", "sleep infinity"]
+      volumeMounts:
+        - name: vol
+          mountPath: /data/demo
+      securityContext:
+        allowPrivilegeEscalation: false
+```
+
+### Network Policies
+
+- Pods communicate freely without restrictions in a namespace
+- Network Policies can limit how the pods can communicate similar to firewalls
+- Can limit incoming and outgoing traffic with `ipBlocks` and `ports`
+
+This is a sample NetworkPolicy, that allows inbound traffic to 6379 in the namespace `project=myproject` from pods labeled `role=frontend`. Outbound traffic is allowed from the protected ports to TCP port 5978 in the IP range `10.0.0.0/24`:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-netpol
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              project: myproject
+        - podSelector:
+            matchLabels:
+              role: frontend
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/24
+      ports:
+        - protocol: TCP
+          port: 5978
+```
+
+### Monitoring, Logging and Troubleshooting
+
+There are two popular monitoring solutions:
+
+- Kubernetes Metrics Server (cluster-wide aggregator of resource usage data) `kubectl top nodes/pods` can be used to get logs
+- Prometheus (can also be used to scrape resource usage and be handled by its client libraries)
+
+For Logging K8s does **not** provide cluster-wide logging. Third party tools need to be used to collect logs, e.g. `Elasticsearch`/`Fluentd`/...
+Normally only running container logs can be accessed with `kubectl logs pod-name container-name`, so 3rd party tools are needed.
+
+### Helm
+
+- To deploy complex applications a large number of manifests is needed
+- Deploying them one by one can be hard
+- Helm Charts can be used to templatize manifests in a well-defined format
+- Charts can be served via repositories
+- Helm is both a package manager for K8s, as well as a CLI client
+- The helm client queries chart repositories base on search params and then requests the API server to deploy clusters
+
+### Service Mesh
+
+- Third party solution to Kubernetes native application connectivity
+- Features include service discovery, mutual TLS, multi-cloud routing, traffic telemetry
+- Relies on proxy of the Data Plane which is managed by the Control Plane
+- Control Plane runs agents for the features descibed above
+- Data Plane proxy is typically injected into pods and handles pod-to-pod communication as well as communication to the Control Plane of the Mesh
+- Some implementations are: `Consul`, `Istio`, `Kuma`, `Linkerd`, `Traefik Mesh`
+
+### Application Deployment Strategies
+
+More complex deployment mechanisms than rolling update/rollback might be necessary, such as:
+
+- Canary
+  - Two applications run simultaneously managed by two deployment controllers, exposed by the same service
+  - Users can manage the amount of traffic each deployment is exposed to by scaling up or down deployment controllers
+  - Resulting in more/less replicas for one of the deployments)
+- Blue/Green
+  - Two applications in two environments, where one is active one is idle (or currently tested)
+  - Two independent deployment controllers with two Services, one each
+  - Typically Ingress or another service is used to direct traffic to one deployment
