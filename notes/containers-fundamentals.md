@@ -359,3 +359,199 @@ Very similar to docker.
 ### CRI-O
 
 Can be managed with `crictl` which exposes `create/start/run/stop/rm/logs/stats/ps/attach/exec/inspect`.
+
+## Building Container Images
+
+- All components of a container have to be specified manually or through scripts
+- Some of the build tools include steps that need to be performed by the user
+- Some configuration can be applied at runtime
+- A lot of different tools available (runc, Docker, Buildah, Podman, ...)
+- Often a script file that automates part of the build, with the most popular being the Dockerfile
+- Docker Engine runs every instruction in a Dockerfile to build an image
+- Context is required (path to a set of files, localhost, or URL) and is the basis of the FS of the container
+- Typically context only includes files needed for the build plus the Dockerfile itself
+- Another example is Podman's Containerfile
+- Another option to create the image is to export a running container which tarballs the containers root filesystem
+
+### Instructions
+
+There are build time instructions:
+
+- FROM: Defines the base image
+- ARG: Can be used in build command (`docker build --build-arg ARG1=1`), default can be set in the Dockerfile
+- RUN: Run command inside the intermediate container that builds the final image
+- LABEL: Adds metadata to the resulting image in key value format
+- EXPOSE: Exposes network ports to open from the container
+- COPY: To copy content from the build context to the intermediate container that gets committed to the resulting image
+- ADD: Like copy, but can be used with URLs and automatically extracts tarfiles
+- WORKDIR: Sets base directory for other commands like `RUN`, `CMD`, ...
+- ENV: Sets env variables inside the container
+- VOLUME: Create a mount point and mount external storage to it
+- USER: To set the user name or UID of the resulting image for some commands
+- ONBUILD: Commands to be executed at a later time (when the image becomes the base image of other images)
+- STOPSIGNAL: Set up a system call signal (e.g. for custom exit signals)
+- HEALTHCHECK: A command can be defined to check if the application is still healthy, if not the container can be stopped
+- SHELL: Defines the default shell for instructions (otherwise on Linux defaults to `bin/sh -c`)
+
+There are also runtime instructions that are executed when the container is started:
+
+- CMD: Only one can be present in a Dockerfile (preferred form: `CMD ["nginx", "-g", "daemon off"]`)
+- ENTRYPOINT: A `CMD` that cannot be overriden at runtime, only its arguments
+
+## Networking
+
+- A typical (physical or virtual) machine is connected to at least one network to form a larger computing env
+- Networking is governed by networking standards, principles, topologies, protocols, policies and rules
+- Containers encapsulate running applications, so these have to be (generally) attached to the networks
+- The two important container networking standards are: Container Network Model (CNM) and Container Network Interface (CNI)
+
+### Container Network Model
+
+- Introduced by Docker and implemented by `libnetwork`
+- CNM specifies a set of objects for a container to join a network
+- It defines a network sandbox for each container (= isolated networking stack inside the container)
+- Containers are reachable via endpoints (= an interface paired with an interface on a network)
+- Multiple endpoints per sandbox are supported so that containers can access multiple networks simultaneously
+- `libnetwork` introduces a consistent programming interface to abstract applications network connectivity
+- Different network drivers are supported by `libnetwork`:
+  - `bridge` (= Linux bridge)
+  - `overlay` (= a network spanning multiple hosts with VXLAN)
+  - `null` (= no networking)
+  - `remote` (= custom network plugins)
+
+### Container Network Interface
+
+- Simpler specification with accompanying libraries, focusing only on the networking connectivity of a container
+- Used in Kubernetes
+- There are tree different plugin groups:
+  - Main: Includes plugins to create `bridge`, `ipvlan`, `loopback`, `ptp` (for `veth`), `macvlan`, `host-device` and more to create new interfaces
+  - IPAM: `dhcp`, `host-local` (DB of IP addresses), `static` (static IPv4/6) plugins for IP address allocation
+  - Meta: e.g. `flannel`, `bandwidth`, `firewall`, `sbr` (source-based routing), `portmap`, systctl `tuning`
+
+### Container Networking in different technologies
+
+- `runc`: Does not provide management capabilities but allows for setting up a network stack
+
+#### Docker
+
+anages traffic with idtables and server routing rules and additional features (packet encapsulation, encryption, routing mesh, session affinity)
+
+Docker Networking Drivers are:
+
+- `Bridge`:
+  - Default network type
+  - Isolates container network from host and acts as DHCP server assigning unique IP addresses to containers
+  - Useful if all containers should talk to each other
+  - Can be user-defined or default
+  - User-defined allows for traffic isolation, automatic DNS resolution, on-the-fly container (dis)connection and sharing env variables between containers
+- `Host`:
+  - No network isolation between the container and the host, container can directly access the host network
+  - Eliminates the need for NAT or proxying
+- `Overlay`:
+  - Spans multiple hosts (typically part of a cluster)
+  - Allows container traffic to be routed between hosts in e.g. a larger cluster
+  - Used in container orchestration platforms for cluster-wide communication
+  - Allows for traffic isolation and mangement through rules and policies
+- `Macvlan`:
+  - Changes appearance of the container on a physical network
+  - Container appears as a physical device with its own MAC address
+  - Container is directly connected to a physical network
+- `None`:
+  - Disables networking of a container altogether
+  - The container can still use third-party network drivers with this option enabled
+- `Network Plugins`:
+  - Third-party network drivers to integrate Docker with specialized network stacks
+
+There are also Docker netowrk modes to manage network capabilitie in multi-host clusters (e.g. Docker Swarm):
+
+- `Internal Mode`:
+  - Isolates an overlay network if we want to restrict container access to the outside world
+- `Ingress Mode`:
+  - Networking of swarms by implementing a routing mesh across hosts of a swarm cluster
+  - Only one ingress can be defined
+
+Docker Network can be managed with `docker network`. `docker network ls` lists all networks available. `docker network inspect NAME` shows information about the network (e.g. driver, subnet, gateway, ...).
+
+Listing all containers attached to a network can be done with `docker network inspect <network-name>|grep Name|tail -n
++2|cut -d':' -f2|tr -d ' ,"'`.
+
+New networks can be created wit `docker network create NAME`. A docker container can be started without a network with e.g. `docker container run -it --network=none alpine sh`. Disconnect a container from a network with: `docker network disconnect`.
+
+#### Podman
+
+Podman supports CNI and provides two networking drivers:
+
+- `Bridge`:
+  - Default networking type, where the container network is isolated from the host network
+  - The user can define a network subnet, IP range and gateway
+- `Macvlan`:
+  - To directly connect a container to a physical network
+  - In rootless mode a separate network namespace has to be created
+  - `dhcp` has to be enabled (or a DHCP client has to be included) for the container to interact with the host network
+
+A custom network with a specific subnet and gateway can be created with: `podman network create --subnet 10.99.3.0/24 --gateway 10.99.3.3 mynet`. Running a container with access to this network can be achieved with: `podman container run -d --name mywebmynet --net mynet nginx`.
+
+### CRI-O
+
+- Networking with Kubernetes pods in mind, based on CNI
+- Allows for containers to connect to a network when created and removed when the pods are destroyed
+- When starting with `crio` there are options to specify host netwrok IP and the network namespace
+
+## Container Storage
+
+### Docker
+
+- Very complex methods of handling storage (different concepts, access modes, storage drivers and volume types)
+- UnionFS is used to overlay a base image with storage layers (ephemeral, custom, config layers):
+- Ephemeral Storage: Reserved for I/O, not recommeded for persistent storage
+- Due to the Copy-On-Write strategy read-only base container image files can be modified, these are copied to the ephemeral storage layer as well, the user from then on interacts with the copy of the file
+- Storage drivers need to be used to write to the containers writable layer (`overlay`, `overlay2`, `aufs`, supporting `xfs` and `ext4`; `devicemapper` with `direct-lvm` and `vfs` for any filesystem)
+- Ephemeral storage gets deleted with the container
+- For persistent storage a volume should be mounted on the container
+- Persistent volumes are not managed by UnionFS and do not get deleted together with a container
+- Docker uses volume plugins to store Docker volumes on remote hosts, for encryption and other functionality
+
+Run a container with a mounted volume: `docker container run -ti --mount target=/data --name cvol alpine sh`. List all volumes with `docker volume ls`. Create a named volume with: `docker volume create --name myvol`
+
+Mount a host directory inside a container: `docker container run -ti --mount type=bind,source=/mnt/shared,target=/data{,readonly} --name csharedvol alpine sh` (omit readonly for writable mount).
+
+Display disk usage with: `docker system df` and remove unused volumes with `docker volume prune`.
+
+### Podman
+
+- Uses `containers/storage` library to manage image, container storage and storage layers
+- A layer is a CoW filesystem defined by a set of changes to its parent
+- Any layer can have only one parent, but one layer can be a parent to multiple layers
+- Podman also uses drivers to implement storage (`overlayfs`, `AUFS`, `btrfs`, `zfs`)
+- The default driver is a local driver, other storage plugins have to be defined in a special configuration file
+- Local storage volumes allows for mounting a directory on the host with its options resembling Linux `mount`
+
+Podman commands are very similar to the Docker commands.
+
+### CRI-O
+
+- Also uses `containers/storage` with CoW and largely the same storage drivers as Podman
+- `overlayfs` as the default storage driver
+
+## Runtime and Container Security
+
+- Environment: Surrounding hardware, OS, hypervisors, network fabric, storage services (each with their own considerations)
+- Container Runtime:
+  - Container processes inherit permissions from the user running the engine
+  - Best option is to not run the runtime with root privileges (Podman/Docker rootless)
+- Client access:
+  - Client should access the runtime in a secure way
+  - Either through SSH or TLS over HTTPS
+  - Calls to the daemon can be secured by default to ensure that every call is verified
+  - Other client authentication mechanisms are possible
+- Container Images:
+  - Use only trusted images and image sources
+  - Verify with content trust signature verification (cross-runtime verification might not work everywhere)
+- Secure Containers:
+  - Run in rootless mode if at all possible
+  - Otherwise `capabilities` can be used to give root access but limit operations at a more granular level
+  - Ensure that only strictly necessary permissions are given
+- Security Tools:
+  - Scanning software can be used for images to ensure that they are safe
+  - AppArmor can be used to to secure container processes
+  - Seccomp (linux kernel feature to limit process access to host resources) to allow/block system calls, kernel memory, kernel I/O, namespaces, ...
