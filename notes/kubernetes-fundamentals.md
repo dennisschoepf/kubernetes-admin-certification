@@ -322,4 +322,69 @@ Inside the directory, you can list all objects in a specific file: `python3 -m j
 2. Call the API with e.g.: `curl https://k8scp:6443/apis --header "Authorization: Bearer $token" -k`
 3. Try different endpoints: `curl https://k8scp:6443/api/v1/namespaces --header "Authorization: Bearer $token" -k`
 
-### Using the proxy
+### Using the Proxy
+
+Using the Proxy is another way to interact with the API. It can be run from within a Pod or through a sidecar. You can start it with: `kubectl proxy --api-prefix=/ &`. Now you can just `curl http://127.0.0.1:8001/api`.
+
+### Working with Jobs
+
+Create a Job like this with `kubectl create -f job.yaml`:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sleepy
+spec:
+  template:
+    spec:
+      containers:
+        - name: resting
+          image: busybox
+          command: ["/bin/sleep"]
+          args: ["3"]
+      restartPolicy: Never
+```
+
+Show running jobs with: `kubectl get job` and specific info about a job with `kubectl describe jobs.batch NAME`. You can delete a job with: `kubectl delete job.batch NAME`. To run a job multiple times use `template.spec.completions = NUMBER`. Show completions status with: `kubectl get jobs.batch`. To run multiple jobs in parallel use `template.spec.parallelism = NUMBER`.
+
+`activeDeadlineSeconds` can be used in the YAML to set a maximum runtime of the job. If a job exceeds it `kubectl get job sleepy -o yaml` should show something like this:
+
+```yaml
+status:
+  conditions:
+    - lastProbeTime: 2024-08-23T10:48:002
+      lastTransitionTime: 2024-08-23T10:48:002
+      message: Job was active longer than specified deadline
+      reason: DeadlineExceeded
+      status: "True"
+      type: Failed
+  failed: 2
+  startTime: 2024-08-23T10:48:002
+  succeeded: 3
+```
+
+### CronJobs
+
+CronJobs can be configured like this:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob #<-- Update this line to CronJob
+metadata:
+  name: sleepy
+spec:
+  schedule: "*/2 * * * *" #<-- All Linux style cronjob syntax
+  jobTemplate: #<-- Use jobTemplate and spec: core
+    spec:
+      template: #<-- This and following lines move
+        spec: #<-- four spaces to the right
+          containers:
+            - name: resting
+              image: busybox
+              command: ["/bin/sleep"]
+              args: ["3"]
+          restartPolicy: Never
+```
+
+List cronjobs with `kubectl get cronjobs.batch`. Similar to a Job you can use `activeDeadlineSeconds` to limit its maximum runtime.
