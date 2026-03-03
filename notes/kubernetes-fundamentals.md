@@ -248,3 +248,78 @@ Then move on to the worker nodes:
 9. CONTROL PLANE NODE, verify status of worker: `kubectl get node`
 10. Allow pods to be deployed to the node again: `kubectl uncordon worker`
 11. Verify the status of the nodes: `kubectl get nodes` (both `Ready`, no `SchedulingDisabled`)
+
+### Working with CPU and memory constraints
+
+Use `kubectl logs POD` and `top` to monitor nodes and pods. Use `kubectl get events` to see if pods get evicted.
+
+1. Get information on resource config for container: `kubectl get deployment hog -oyaml` (`spec.containers.resources`)
+2. Adapt yaml (Create if not present: `kubectl get deployment hog -o yaml > hog.yaml`)
+3. Limit by applying resource limits
+4. Replace the deployment: `kubectl replace -f hog.yaml`
+5. Delete deployment if problems arise: `kubectl delete deployment hog`
+6. Change parameters and restart
+
+File contents for step 3:
+
+```yaml
+imagePullPolicy: Always
+name: hog
+resources: # Edit to remove {}
+  limits: # Add these 4 lines
+    memory: "4Gi"
+  requests:
+    memory: "2500Mi"
+terminationMessagePath: /dev/termination-log
+terminationMessagePolicy: File
+```
+
+### Resource Limits in Namespaces
+
+You can set resource limits with the `LimitRange` object:
+
+```yaml
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: low-resource-range
+spec:
+  limits:
+    - default:
+        cpu: 1
+        memory: 500Mi
+      defaultRequest:
+        cpu: 0.5
+        memory: 100Mi
+      type: Container
+```
+
+You can use this object in a namespace with: `kubectl create -f low-resource-range.yaml -n low-usage-limit` and show it with: `kubectl get limitrange`. For pods in that namespace use `kubectl get pod POD -oyaml` to see that they inherit the options.
+
+## APIs and Access
+
+You can impersonate other users by using `--as` with your CLI commands.
+
+### Configuring TLS
+
+Prerequisites: Certificate data in `$HOME/.kube/config`. Store in environment variables with: `export client=$(yq .users.0.user.client-certificate-data $HOME/.kube/config)`, `export key=$(yq .users.0.user.client-key-data $HOME/.kube/config)` and `export auth=$(yq .clusters.0.cluster.certificate-authority-data $HOME/.kube/config)`.
+
+1. Encode the keys: `echo $client | base64 -d - > ./client.pem`, `echo $key | base64 -d - > ./client.pem`, `echo $auth | base64 -d - > ./client.pem`
+2. Get the server URL: `kubectl config view | grep server`
+3. Make requests with the values: `curl --cert ./client.pem --key ./client-key.pem --cacert ./ca.pem https://k8scp:6443/api/v1/pods`
+
+### Exploring API Calls
+
+We can use `strace` to view what a command does, e.g. `strace kubectl get endpoints`. There should be `openat` calls using something like `.kube/cache/discovery/...`. This directory contains a lot of configuration information for Kubernetes.
+
+Inside the directory, you can list all objects in a specific file: `python3 -m json.tool v1/serverresources.json | grep kind` (there might be more in other files)
+
+## Working with API Objects
+
+### REST API Access
+
+1. Store the token for accessing the API in an env variable: `export token=$(kubectl create token default)`
+2. Call the API with e.g.: `curl https://k8scp:6443/apis --header "Authorization: Bearer $token" -k`
+3. Try different endpoints: `curl https://k8scp:6443/api/v1/namespaces --header "Authorization: Bearer $token" -k`
+
+### Using the proxy
