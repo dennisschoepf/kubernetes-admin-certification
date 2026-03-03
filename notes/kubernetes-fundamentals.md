@@ -316,6 +316,35 @@ Inside the directory, you can list all objects in a specific file: `python3 -m j
 
 ## Working with API Objects
 
+### Stateful Sets
+
+Object designed for applications requiring stable identities and persistent state (e.g. databases). Each pod in a StatefulSet is assigned an identity that is composed of:
+
+- Stable network identity: DNS name that does not change
+- Stable storage: Pods can be associated with persistent volumes that remain consistent across restarts
+- Ordinal index: Pods are numbered sequentially and the index is tied to the identity
+
+The identity persists regardless of the node the pod is running on. The deployment order is sequential (`app-0` has to start before `app-1`, ...)
+
+### Autoscaling
+
+The HPA (horizontal pod autoscaler) dynamically adjusts the number of pod replicas in a deployment, replica set or stateful set based on resource utilization or other custom metrics. By default it targets 80% CPU utilization, but you can configure custom metrics via the Kubernetes metrics server.
+
+### RBAC
+
+Securing access to resources in a cluster can be done with the `rbac.authorization.k8s.io/v1` API group API group. It has four stable resources:
+
+- Role (A set of permissions that apply to resources in a namespace)
+- ClusterRole (Similar to role, but cluster wide)
+- RoleBinding (Grants permissions defined in a Role to a user, group or ServiceAccount)
+- ClusterRoleBinding (~ RoleBinding for Cluster)
+
+Example applications:
+
+- A role that allows a developer to only read pods in a certain namespace
+- A cluster role permitting an admin to create deployments in any namespace
+- A rolebinding to associate these permissions to a specific user or service account
+
 ### REST API Access
 
 1. Store the token for accessing the API in an env variable: `export token=$(kubectl create token default)`
