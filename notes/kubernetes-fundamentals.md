@@ -158,3 +158,93 @@ networking:
 1. Check existing Kubernetes config inside pod: `kubetcl exec POD_NAME -- printenv |grep KUBERNETES`
 2. Expose with load balancer: `kubectl expose deployment nginx --type=LoadBalancer`
 3. If not needed delete BOTH deployment and service
+
+## Kubernetes Architecture
+
+### Basic Node Maintenance
+
+#### Backing Up etcd with etcdctl
+
+1. Find the data directory for etcd: `sudo grep data-dir /etc/kubernetes/manifests/etcd.yaml`
+2. Enter the `etcd` container: `kubectl -n kube-system exec -it etcd-<TAB> -- sh`
+3. Get the necessary file paths for TLS from `/etc/kubernetes/pki/etcd`
+4. Check `etcd` health by providing the paths from step 3
+5. Check the number of databases in the cluster
+6. Save by using built-in snapshot utility
+7. Verify the existence of the backup: `sudo ls -l /var/lib/etcd/`
+8. Store the backup together with other relevant information (kubeadm-config and pki/etcd)
+
+Command for step 4:
+
+```sh
+kubectl -n kube-system exec -it etcd-cp -- sh \
+-c "ETCDCTL_API=3 \
+ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt \
+ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt \
+ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key \
+etcdctl endpoint health"
+```
+
+Command for step 5:
+
+```sh
+kubectl -n kube-system exec -it etcd-cp -- sh \
+-c "ETCDCTL_API=3 \
+ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt \
+ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt \
+ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key \
+etcdctl --endpoints=https://127.0.0.1:2379 member list -w table"
+```
+
+Command for step 6:
+
+```sh
+kubectl -n kube-system exec -it etcd-cp -- sh \
+-c "ETCDCTL_API=3 \
+ETCDCTL_CACERT=/etc/kubernetes/pki/etcd/ca.crt \
+ETCDCTL_CERT=/etc/kubernetes/pki/etcd/server.crt \
+ETCDCTL_KEY=/etc/kubernetes/pki/etcd/server.key \
+etcdctl --endpoints=https://127.0.0.1:2379 snapshot save /var/lib/etcd/snapshot.db "
+```
+
+Script for step 8:
+
+```sh
+mkdir $HOME/backup
+sudo cp /var/lib/etcd/snapshot.db $HOME/backup/snapshot.db-$(date +%m-%d-%y)
+sudo cp /root/kubeadm-config.yaml $HOME/backup/
+sudo cp -r /etc/kubernetes/pki/etcd $HOME/backup/
+```
+
+#### Upgrade the cluster
+
+Start with the control plane node(s)
+
+1. Remove the hold on `kubeadm`: `sudo apt-mark unhold kubeadm`
+2. Install new version: `sudo apt install -y kubeadm=1.34.1-1.1`
+3. Reinstate the hold: `sudo apt-mark hold kubeadm`
+4. Verify the version: `sudo kubeadm version`
+5. Evict as many pods as possible (everything but DaemonSets): `kubectl drain cp --ignore-daemonsets`
+6. Plan/prepare the `kubeadm` upgrade command: `sudo kubeadm upgrade plan`
+7. Actually upgrade: `sudo kubeadm upgrade apply v1.34.1`
+8. Check the node status: `kubectl get node`
+9. Release the hold on `kubelet` and `kubectl`: `sudo apt-mark unhold kubelet kubectl`
+10. Upgrade `kubelet` and `kubectl` to the same version as `kubeadm`: `sudo apt install -y kubelet=1.34.1-1.1 kubectl=1.34.1-1.1`
+11. Restart the daemons: `sudo systemctl daemon-reload && sudo systemctl restart kubelet`
+12. Verify the cp node update: `kubectl get node`
+13. Make the cp node available for scheduling again: `kubectl uncordon cp`
+14. Verify the Ready status of the node `kubectl get node`
+
+Then move on to the worker nodes:
+
+1. Remove the hold: `sudo apt-mark unhold kubeadm`
+2. Check available versions: `sudo apt-cache madison kubeadm`
+3. Install the new version: `sudo apt update && sudo apt install -y kubeadm=1.34.2-1.1`
+4. Add the hold: `sudo apt-mark hold kubeadm`
+5. Drain the worker node FROM THE CONTROL PLANE NODE: `kubectl drain worker --ignore-daemonsets`
+6. BACK TO WORKER NODE, start upgrade: `sudo kubeadm upgrade node`
+7. Remove hold on kubelet and kubectl, install updates and add hold again
+8. Restart daemons (see step 11 of cp update)
+9. CONTROL PLANE NODE, verify status of worker: `kubectl get node`
+10. Allow pods to be deployed to the node again: `kubectl uncordon worker`
+11. Verify the status of the nodes: `kubectl get nodes` (both `Ready`, no `SchedulingDisabled`)
