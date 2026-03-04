@@ -417,3 +417,80 @@ spec:
 ```
 
 List cronjobs with `kubectl get cronjobs.batch`. Similar to a Job you can use `activeDeadlineSeconds` to limit its maximum runtime.
+
+## Helm and Kustomize
+
+Real-world applications are not as straight-forward as we experienced in the lab exercices. Helm addresses some of these shortcomings by:
+
+- Providing a way to manage Kubernetes packages
+- And to manage multiple interdependent components
+
+A Helm chart is a package that includes all manifests, templates and scripts for installation, configuration and removal of a package. The package (a compressed tarball) can consist of Secrets, Ingress, Deployments, ... so that they do not have to be handled individually. This allows for deploying a full application quickly.
+
+Charts can be shared publicly and privately, are version controlled, can be customized (values.yaml e.g. for different environments) and integrated into pipelines. You can also revert an application to a known good state without restoring multiple YAML files and there is a large pre-existing body of charts available.
+
+### Chart Structure
+
+A chart typically looks like this (for templating - Go templating is used):
+
+```
+├── Chart.yaml
+├── README.md
+├── templates
+│   ├── NOTES.txt
+│   ├── _helpers.tpl
+│   ├── configmap.yaml
+│   ├── deployment.yaml
+│   ├── pvc.yaml
+│   ├── secrets.yaml
+│   └── svc.yaml
+└── values.yaml
+```
+
+This is how a Helm template for a Kubernetes secret could look like:
+
+```go
+apiVersion: v1
+kind: Secret
+metadata:
+  name: { { template "fullname" . } }
+  labels:
+    app: { { template "fullname" . } }
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    release: "{{ .Release.Name }}"
+    heritage: "{{ .Release.Service }}"
+type: Opaque
+data:
+  mariadb-root-password:
+    { { default "" .Values.mariadbRootPassword | b64enc | quote } }
+  mariadb-password: { { default "" .Values.mariadbPassword | b64enc | quote } }
+```
+
+Helm Chart can be distributed through repositories that store two things: `index.yaml` with all available charts and metadata and the actual chart packages stored as compressed tarballs.
+
+`Artifact Hub` is a public catalog that aggregates charts from a number of repositories, it can be searched with e.g. `helm search hub redis`.
+
+A repository can be added with: `$ helm repo add bitnami ht‌tps://charts.bitnami.com/bitnami` and a specific repo can be searched with: `$ helm search repo bitnami/redis`.
+
+### Deploying a chart
+
+The `README.md` typically includes documentation on dependencies, options and external resources. The Readme can be accessed by pulling the chart: `helm pull bitnami/apache --untar` and inspecting its contents. If all prerequisites are met, you can install with: `$ helm install anotherweb .`.
+
+The cahrt release can be managed by using commands to list, upgrade, rollback or delete it.
+
+### Kustomize
+
+A K8s config management tool that should simplify the customization of YAML manifests. Instead of relying on text substitution, Kustomize enables you to define a base set of resources and customize them for different environments with `overlays`. Overlays could modify image tags, labels or resource limits.
+
+Kustomize is included in `kubectl` and can be used with `kubectl kustomize`. Changes done by kustomize can be applied with: `$ kubectl apply -k ./dir`. Configuration is done in `kustomization.yaml` files. They define the resources to manage and the modifications that should be applied.
+
+Kustomize splits config into two parts:
+
+- Bases (Directories that contain shared, common config, e.g. a deployment definition for all envs)
+- Overlays (Allow for environment-specific changes, e.g. different replica counts, image tags on different envs)
+
+In addition Kustomize supports different mechanisms:
+
+- Patches: Allow fine-grained changes to specific resources (e.g. adding an env variable, modifying a field)
+- Transformers: Broad modifications across multiple resources, e.g. injecting a label to every object in a deployment
+- Generators: Create resources dynamically (like ConfigMaps and secrets from other files)
