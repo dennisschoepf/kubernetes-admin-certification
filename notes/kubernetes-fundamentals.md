@@ -494,3 +494,99 @@ In addition Kustomize supports different mechanisms:
 - Patches: Allow fine-grained changes to specific resources (e.g. adding an env variable, modifying a field)
 - Transformers: Broad modifications across multiple resources, e.g. injecting a label to every object in a deployment
 - Generators: Create resources dynamically (like ConfigMaps and secrets from other files)
+
+### Working with Helm and Charts (Lab)
+
+Install helm by downloading the helm tarball, extract it and move to a location in the path in the path. Try to search the hub afterwards: `helm search hub database`.
+
+You can also add other repos right away, e.g.: `helm repo add ealenn https://ealenn.github.io/charts && helm repo update`. You could then install charts with this command: `helm upgrade -i tester ealenn/echo-server --debug`. A pod should have been started.
+
+The chart history can be accessed with `helm list`. Uninstall a chart with `helm uninstall tester`.
+
+You can inspect the tarball for the chart by finding it first (somewhere in `~/.cache/helm/repository`) and then extracting its contents.
+
+To change the values of a helm chart before deploying, do the following:
+
+1. `helm pull CHART --untar`
+2. `cd CHART && vim values.yaml`
+3. Adapt some values
+4. Install the local chart contents with `helm install CHART . -n kube-system`
+
+### Working with HPAs
+
+A deployment for which we can use a horizontal pod autoscaler could look like this:
+
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hpa-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hpa-app
+  template:
+    metadata:
+      labels:
+        app: hpa-app
+    spec:
+      containers:
+      - name: web
+        image: registry.k8s.io/hpa-example
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 5m
+          limits:
+            cpu: 10m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hpa-app
+spec:
+  type: ClusterIP
+  selector:
+    app: hpa-app
+  ports:
+  - port: 80
+    targetPort: 80
+```
+
+You can create an autoscaler object with:
+
+```sh
+kubectl autoscale deployment hpa-app \
+  --cpu=50% --min=2 --max=10 \
+  --dry-run=client -o yaml > hpa.yaml
+```
+
+and apply it with `kubectl apply -f hpa.yaml`. Get live updates of how the replicas behave with: `watch kubectl get hpa` and the number of pods increasing with: `watch kubectl get pods -o wide`.
+
+Caution!:
+
+- The `metrics-server` has to be running for HPA to work
+- A `cpu` request has to be defined for the container to compute utilization
+- `kubectl top pods` can be used to view live CPU usage
+- Scaling behavior can be tuned in HPA v2 using custom metrics and stabilization windows
+
+### Working with Kustomize
+
+Set up base yamls (e.g. for deployments and services) in one directory and overlays for different envs in others (`overlay/dev/deployment-patch.yaml`, ...). Add a kustomization.yaml for the configurable values:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namePrefix: lf-
+resources:
+  - deployment.yaml
+  - service.yaml
+labels:
+  - includeSelectors: true
+pairs:
+  company: linux-foundation
+```
+
+You can then build the configuration with `kubectl kustomize myapp/base` and `kubectl kustomize myapp/overlays/dev` and so on. After building apply it with: `kubectl apply -k myapp/base/`. You can start resources for the other envs by using `kubectl apply -k myapp/overlays/dev`. After that pods should be running for both the base as well as the specific env.
