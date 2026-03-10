@@ -590,3 +590,138 @@ pairs:
 ```
 
 You can then build the configuration with `kubectl kustomize myapp/base` and `kubectl kustomize myapp/overlays/dev` and so on. After building apply it with: `kubectl apply -k myapp/base/`. You can start resources for the other envs by using `kubectl apply -k myapp/overlays/dev`. After that pods should be running for both the base as well as the specific env.
+
+## Kubernetes Storage
+
+A Pod can declare one ore more volumes and specifies where these volumes are mounted within its containers. A volume requires three attributes:
+
+1. Name
+2. Type
+3. Mount Point
+
+### Local & Ephemeral Values
+
+- `emptyDir` creates a temporary directory for the lifetime of the pod for e.g. scratch space or caching
+- `hostPath` mounts a file/directory/device from the host node into the pod e.g. for logs or config files
+  - `DirectoryOrCreate` or `FileOrCreate` allows K8s to create resources on demand
+  - Caution! Tightly coupled to the node, not portable across clusters, potential security risks
+
+### Cloud Based Volumes
+
+There are provider specific backends for e.g. Google persistent disks, Amazon EBS, Azure File to mount cloud-based block storage (provided that accounts/permissions are configured).
+
+### Network Based Volumes
+
+If multiple pods or nodes need to access the same data, `nfs` and `iscsi` (network attached block storage) can be used.
+
+### Other Volume Types
+
+- `downwardApi` to expose pod metadata as files
+- `secret` for Kubernetes secrets
+- `configMap` to mount configuration data from e.g. settings files
+- `projected` to combine multiple sources into a single volume
+- `local` to mount a local disk or partition (e.g. to mount a specific high-performance SSD)
+- `fc` for different providers
+- `persistentVolumeClaim` to access PersistentVolume
+- `csi` to access everything that supports the container storage interface driver
+
+### Creating a ConfigMap
+
+```sh
+kubectl create configmap colors \
+    --from-literal=text=black \ # Pass k/v pairs right within the command
+    --from-file=./favorite \ # Create from file contents
+    --from-file=./primary/ # Or from a directory
+```
+
+The data is then represented in the configmap `kubectl get configmap colors -oyaml` in the `data` property. A pod can use the configmap by specifying: `spec.containers.env.valueFrom.configMapKeyRef` (specify name and key for the config map).
+
+The values from the file can be included as environment variables with: `spec.containers.envFrom.configMapRef`.
+
+You could also create a YAMl file that describes the key/values in the file itself:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fast-car
+  namespace: default
+data:
+  car.make: Ford
+  car.model: Mustang
+  car.trim: Shelby
+```
+
+This can be included in a pod with: `volumes.configMap.name`.
+
+### Creating a NFS volume
+
+Prerequisites: A NFS somewhere has to exist already.
+
+This file shows how to mount a NFS into a pod:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pvvol-1
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    path: /opt/sfw
+    server: cp #<-- Hostname of cp node
+    readOnly: false
+```
+
+### Creating a PersistentVolumeClaim
+
+Create a pvc with something like this:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-one
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 200Mi
+```
+
+In a pod you can mount the claim by specifying it in a yaml file where the claim name matches the name of the PersistentVolumeClaim object:
+
+```yaml
+#...
+volumes:
+  - name: nfs-vol
+    persistentVolumeClaim:
+      claimName: pvc-one
+#...
+```
+
+#### Using ResourceQuota to limit PVC usage
+
+A resource quota can be set up like this:
+
+```yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: storagequota
+spec:
+  hard:
+    persistentvolumeclaims: "10"
+    requests.storage: "500Mi"
+```
+
+When creating this inside a namespace (e.g. `kubectl -n small create -f storage-quota.yaml`) it is applied to the namespace (check with `kubectl describe ns small`). Every claim by a pod (or something else) will increment the claim counter and used storage in `describe ns`. The size of e.g. a NFS share is not counted against the resource quota inside a namespace.
+
+When deleting a persistentVolumeClaim `ReclaimPolicy` is used to act on the underlying storage. It can be one of `Delete`, `Retain`. Manually created PVCs by default are `Retain`, meaning the files still exist after deleting the PVC. `Delete` cant always be used. The volume type does have to support the deleter volume plugin (`NFS` does not for example).
+
+If trying to create a claim that would exceed the resource quota you will get an error `exceeded quota`.
