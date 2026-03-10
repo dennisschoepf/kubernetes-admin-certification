@@ -725,3 +725,27 @@ When creating this inside a namespace (e.g. `kubectl -n small create -f storage-
 When deleting a persistentVolumeClaim `ReclaimPolicy` is used to act on the underlying storage. It can be one of `Delete`, `Retain`. Manually created PVCs by default are `Retain`, meaning the files still exist after deleting the PVC. `Delete` cant always be used. The volume type does have to support the deleter volume plugin (`NFS` does not for example).
 
 If trying to create a claim that would exceed the resource quota you will get an error `exceeded quota`.
+
+### Creating StorageClasses to dynamically provision volumes
+
+StorageClasses automate the process of manually creating PVs and PVCs. When creating a PVC and specifiying a StorageClass the system automatically creates a PV that meets the requirements.
+
+StorageClasses require a provisioner. For NFS e.g. this: `helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/`. Installing this would also create a storage class for us `kubectl get sc`.
+
+The storage class can then be used in a PVC by specifiying `spec.storageClassName`:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-two
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 200Mi
+```
+
+This would create both a PV and PVC `kubectl get pv,pvc`. Inside a pod the the persistentVolumeClaim can be used similarly to the previous steps by specifiying `columes.persistentVolumeClaim.name`.
