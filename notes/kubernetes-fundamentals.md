@@ -749,3 +749,92 @@ spec:
 ```
 
 This would create both a PV and PVC `kubectl get pv,pvc`. Inside a pod the the persistentVolumeClaim can be used similarly to the previous steps by specifiying `columes.persistentVolumeClaim.name`.
+
+## Services
+
+Services are API resources that define a logical set of pods and a policy for accessing them (achieved through labels and selectors). Services map to Endpoints (~EndpointSlices) to manage traffic to pods.
+
+Rules defined by Services are acted upon by `kube-proxy`, which monitors the API for service and endpoint changes and configures networking rules (with `iptables` or `IPVS` in modern clusters) accordingly, by:
+
+1. Assigning a random IP for a service
+2. Listen to traffic to the Services `ClusterIP:Port`
+3. Redirecting traffic to the Pods defined in the Service Selectors
+
+Services provide automatic stateless load balancing for matched pods, distributed evenly. Session Affinity can be enabled with the `sessionAffinity` field to ensure that requests from the same client IP are routed to the same Pod (for stateful applications). Headless services are also possible, allowing direct access to individual pod IPs (e.g. for databases).
+
+Version-specific labels can be used to route traffic precisely on breaking changes for updates.
+
+The most common Service Types are:
+
+1. ClusterIP (default) which assigns a stable internal IP to a service, external access possible by combining it with other mechanisms
+2. NodePort exposes an application on a specific port of **every** node in the cluster, accessible via `NodeIp:NodePort` (builds upon ClusterIp, by redirecting node traffic on a port to a specific pod ClusterIP)
+3. LoadBalancer can utilize an external load balancer to distribute traffic, if no load balancer is available in the environment this falls back to NodePort
+4. ExternalName creates a DNS alias (CNAME) that points to an external service outside of the proxy at the DNS level, useful if services live outside of the cluster (e.g. legacy database)
+
+Services are coordinated with several components:
+
+- `kube-controller-manager` creates and manages Service objects
+- `kube-apiserver` communicates changes to the networking plugin and to the `kube-proxy` agents on the nodes
+- `EndpointSlice`s are used together with networking rules to ensure traffic is routed to the correct pod. These slices track the ephemeral IP addresses of Pods matching the Service selector
+
+Ingress controllers are not services but are used for external traffic.
+
+### Local Proxy for development
+
+For troubleshooting `kubectl proxy` can be used. It provides access to internal services without permanently exposing them. It sets up a proxy server (typically on `127.0.0.1:8001`). You can then access objects via constructed URLs (`.../api/v1/namespaces/default/services/ghost:NAMED_PORT` for the `ghost` Service in ns `default`).
+
+### How Services Communicate
+
+The `kube-controller-manager` hosts two controllers critical for services: `Service Controller` and `Endpoint Controller`. Both controllers communicate to the API when Services/Endpoints are created/updated/removed. The API server then communicates with the cluster network plugin (Cilium, Calico, Flannel, ...) to ensure that routing and connectivity are applied on all nodes.
+
+On each worker node networking agents (e.g. `cilium-node` for cilium and the `kube-proxy`), receive instructions and adapt the node networking accordingly. They do this by configuring the local firewall so that network traffic is correctly forwarded to the right pods. The `kube-proxy` mode is set when initializing the cluster by providing `--proxy-mode=iptables` or `--proxy-mode=ipvs`.
+
+This means the service traffic flow is as follows:
+
+1. External client request (optional)
+2. Ingress routes traffic to a ClusterIp service (or NodePort or LoadBalancer)
+3. `kube-proxy` managed firewall rules recognize traffic for a specific node port
+4. The traffic is redirected from the NodePort to the ClusterIP of the service
+5. The service consults its endpoints list (where Pod IPs running an application are tracked)
+6. The request is forwarded to a Pod IP
+7. If there multiple pods that match the service selector the traffic is distributed accross them
+
+### Exposing an application
+
+You can create a service for an existing Deployment, ReplicaSet, or Pod with (where PORT is the internal port of the deployment that should be used for traffic, e.g. 80 for an nginx deployments HTTP traffic):
+
+`kubectl expose deployment/NAME --port=PORT --type=NodePort/ClusterIp`
+
+A service configuration in a file includes three key settings:
+
+1. `port` - The port exposed by the service for internal cluster access (e.g. 80)
+2. `targetPort` The port on the pod where traffic is sent (defaults to `port` if unspecified)
+3. `nodePort` - The randomly assigned port for external access in NodePort services
+
+The range of ClusterIPs and NodePorts can be specified at API server startup.
+
+Services are not limited to route traffic in the same namespace, they also can route to external resources or even legacy applications outside the cluster.
+
+### DNS in Kubernetes
+
+CoreDNS is the default DNS provider in Kubernetes and acts as a lightweight, extensible DNS server that runs within a Pod. It exposes a Service named `kube-dns` in the `kube-system` namespace. It manages DNS zones configured for the cluster to enable name resolution for a variety of resources.
+
+It runs one or more servers that handle different DNS zones (e.g. `cluster.local` for the internal cluster domain). Each server can load one or more plugin chains to adapt how DNS queries are processed.
+
+You can get the DNS IP by looking at `cat /etc/resolv.conf`. With that IP you can `dig @IP -x IP` to see that This DNS server is within the cluster. You can access pods from within another pod with e.g. `curl RESOURCE.NAMESPACE`
+
+You can also inspect `kube-dns` further with `kubectl -n kube-system get svc kube-dns -o yaml`. There is also a configmap for dns viewable at `kubectl -n kube-system get configmaps coredns -oyaml`.
+
+Process for adapting coredns config:
+
+1. Backup current config: `kubectl -n kube-system get configmaps coredns -o yaml > coredns-backup.yaml`
+2. Edit the dns configmap: `kubectl -n kube-system edit configmaps coredns`
+3. Delete the coredns pods: `kubectl -n kube-system delete pod ...`
+
+If you e.g. added a DNS rewrite in the config map, you would then be able to `dig REWRITTEN_URL` and see that it resolves to the service.
+
+#### Verifying DNS registration
+
+To confirm that DNS is working correctly inside the cluster you can run a simple test inside the cluster, e.g. from a Pod that has a shell and some simple network utilities installed. You can then use tools like `nslookup`, `dig`, `nc` or packet analyzers like `Wireshark` to debug.
+
+In addition to general considerations on DNS you must also pay attention to the specific services in use and how it is applied to different Pods (e.g. matching labels to selector). You can also check `/etc/resolv.conf` inside a pod to verify that it points to the correct DNS server and checking Network Policies and firewalls that might be blocking DNS queries.
