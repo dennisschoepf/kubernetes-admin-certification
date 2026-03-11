@@ -838,3 +838,176 @@ If you e.g. added a DNS rewrite in the config map, you would then be able to `di
 To confirm that DNS is working correctly inside the cluster you can run a simple test inside the cluster, e.g. from a Pod that has a shell and some simple network utilities installed. You can then use tools like `nslookup`, `dig`, `nc` or packet analyzers like `Wireshark` to debug.
 
 In addition to general considerations on DNS you must also pay attention to the specific services in use and how it is applied to different Pods (e.g. matching labels to selector). You can also check `/etc/resolv.conf` inside a pod to verify that it points to the correct DNS server and checking Network Policies and firewalls that might be blocking DNS queries.
+
+## Kubernetes Ingress
+
+Builds upon services by creating a more efficient and flexible solution. It centralizes external access through a single entry point. You are able to route traffic based on request details like hostname, path, ... reducing the need for multiple load balancers. It is implemented with an Ingress Controller that operates independently from the `kube-controller-manager`.
+
+Ingress Controllers are deployed as separate agents in the cluster. Ingress Rules (K8s resources) are used to determine how external traffic is routed to internal services. There are a few implementaions of Ingress Controllers like Traffic, Envoy, Countour, HAProxy. These can be deployed with manifest or Helm charts.
+
+You can multiple Ingress controllers in a cluster (e.g. to separate configurations or purpose). Annotations are used to indicate which controller should process the rules. Make sure that only one controller handles certain traffic.
+
+An example config for Ingress could look like this:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ghost
+spec:
+  rules:
+  - host: ghost.192.168.99.100.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service
+            name: ghost
+            port:
+              number: 2368
+```
+
+This routes root path traffic from `ghost.192.168.99.100.nip.io` to the ghost service on port `2368`. `ImplementationSpecific` Indicates that the path matching depends on the Ingress controller used.
+
+You can manage Ingress through kubectl, e.g. to list `kubectl get ingress`, to edit `kubectl edit ingress NAME`, to delete `kubectl delete ingress NAME`.
+
+Deploying an Ingress controller can be as simple as applying a pre-configured YAML. The full request flow would look like this:
+
+1. External Request
+2. Ingress Controller -> Matches host/path
+3. Ingress Rule -> Routes to service
+4. Service -> Selectors -> Pod
+5. Pod
+
+You can define multiple rules in an Ingress resource:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multi-service-ingress
+spec:
+  rules:
+  - host: ghost.192.168.99.100.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: external
+            port:
+              number: 80
+  - host: nginx.192.168.99.100.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service
+            name: internal
+            port:
+              number: 8080
+```
+
+There are limitations to Ingress though:
+
+- You can only route HTTP/HTTPS (no direct TCP, gRPC)
+- Header-Based Routing is not possible out of the box
+- Canary traffic splitting is not natively available
+
+#### Configuring Ingress
+
+### Gateway API to address Ingress shortcomings
+
+Is comprised of four resource kinds to manage traffic in a cluster:
+
+- `GatewayClass`: A group of gateways sharing configuration (think: blueprint for traffic handling)
+- `Gateway`: Instance of that blueprint, listening to incoming requests
+- `HTTPRoute`: Defines rules for routing HTTP traffic from a gateway to services (based on conditions like, hostname, path, header)
+- `GRPCRoute`: Defines rules for routing gRPC traffic
+
+#### GatewayClass
+
+Scoped to the cluster as a whole. Defines a set of common properties and behaviors that any gateway references. This allows for implementing organizational policies, while application developers could define the actual routing rules somewhere else.
+
+The configuration could look like this:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: example-class
+spec:
+  controllerName: example.com/gateway-controller
+```
+
+#### Gateway
+
+Acts as the main entry point for external traffic entering the cluster. It specifies how requests should be received and processed by configuring one or more listeners. It allows behavior like "accept HTTP traffic on port 80" with configuration like this:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: example-gateway
+spec:
+  gatewayClassName: example-class
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+```
+
+```
+Gateways act as the "front door" of your Kubernetes cluster, while GatewayClasses determine who builds and manages that door. Developers define how traffic should flow, and administrators ensure that it is handled securely and consistently.
+```
+
+#### HTTPRoute
+
+Defines how HTTP traffic is handled and routed within the Kubernetes cluster. It allows rules to be created based on hostnames, paths, headers, query params. It can enable weighted routing, canary deployments and more.
+
+HTTPRoutes are associated with one or more gateways. This decouples it from the actual gateways and allows admins to handle gateway specific stuff, while devs can edit HTTPRoutes for application traffic. An example would be:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: example-httproute
+spec:
+  parentRefs:
+    - name: example-gateway # The gateway it is associated with
+  hostnames:
+    - "www.example.com"
+  rules:
+    - matches:
+        - path:
+          type: PathPrefix
+          value: /login
+      backendRefs:
+        - name: example-svc
+          port: 8080
+```
+
+```
+HTTPRoutes enable you to define how HTTP traffic reaches your applications, while Gateways control where traffic enters the cluster. Together, they provide a powerful and flexible model for managing application networking.
+```
+
+### Traffic Management with Service Meshes
+
+Ingress might not be enough for service discovery, rate limiting, in-depth observability, ... Here are service mesh could help. It is an infrastructure layer that uses a network of proxies (typically as sidecars to application pods) to manage how services communicate with each other.
+
+A service mesh operates on two planes: `Data Plane` and `Control Plane`, where the control plane oversees the proxies, provides their config, certificates, ... and more. The data plane comprises proxies that actually handle ingress/egress and mesh traffic between services.
+
+Some examples of meshes include: Envoy, Istio, Linkerd.
+
+#### Linkerd
+
+Install the `linkerd` CLI as described on their site. You can run a pre-deploy check with `linkerd check --pre`. Afterwards enable the K8s gateway API `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml` and install linkerd with `linkerd install --crds | kubectl apply -f -` and `linkerd install | kubectl apply -f -`. You can check the successful installation with `linkerd check`.
+
+A `linkerd` GUI can be installed with `linkerd viz install | kubectl apply -f -` (check with `linkerd viz check`). This is by default only accessible on localhost. You would need to edit the service and deployment to allow access from a remote browser.
+
+You can do this with: `kubectl -n linkerd-viz edit deploy web` and removing the `enforced-host`. Afterwards edit the service: `kubectl edit svc web -n linkerd-viz` and set a nodePort, so that you can access it from outside.
+
+To add an object to the mesh, use `linkerd inject`: `kubectl -n accounting get deploy nginx-one -o yaml | linkerd inject - | kubectl apply -f -`. after that you should see that the namespace is meshed.
