@@ -919,6 +919,42 @@ There are limitations to Ingress though:
 
 #### Configuring Ingress
 
+Install an ingress controller by searching for one with: `helm search hub ingress`. If you want every pod a node to handle traffic, change the `values` of the chart to a `DaemonSet` with `helm pull ingress-nginx/ingress-nginx --untar && cd ingress-nginx && vim values.yaml` (change `kind:` to `DaemonSet`). Install it with `helm install NAME .`.
+
+To actually route traffic, create rules:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-test
+  annotations:
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: www.external.com # For each request with the Host header
+      http:
+        paths:
+          - backend: # To our backend
+              service: # service
+                name: web-one # called web-one
+                port:
+                  number: 80
+            path: / # for all paths
+            pathType: ImplementationSpecific
+```
+
+If using `linkerd` you can add the ingress annotation for these pods as well:
+
+```sh
+kubectl get ds myingress-ingress-nginx-controller -o yaml |\
+linkerd inject --ingress - | kubectl apply -f -
+```
+
+10.244.2.98:31210
+
 ### Gateway API to address Ingress shortcomings
 
 Is comprised of four resource kinds to manage traffic in a cluster:
@@ -1011,3 +1047,107 @@ A `linkerd` GUI can be installed with `linkerd viz install | kubectl apply -f -`
 You can do this with: `kubectl -n linkerd-viz edit deploy web` and removing the `enforced-host`. Afterwards edit the service: `kubectl edit svc web -n linkerd-viz` and set a nodePort, so that you can access it from outside.
 
 To add an object to the mesh, use `linkerd inject`: `kubectl -n accounting get deploy nginx-one -o yaml | linkerd inject - | kubectl apply -f -`. after that you should see that the namespace is meshed.
+
+### Gateway API
+
+Start by e.g. installing the NGINX Gateway Fabric:
+
+```sh
+kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/\
+config/crd/gateway-api/standard?ref=v1.6.1" | kubectl apply -f -
+```
+
+and deploy its CRDs and itself with:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/nginx/\
+nginx-gateway-fabric/v1.6.1/deploy/crds.yaml
+kubectl apply -f https://raw.githubusercontent.com/nginx/\
+nginx-gateway-fabric/v1.6.1/deploy/default/deploy.yaml
+```
+
+You can then connect deployments by creating a gateway and a http route:
+
+```yaml
+# Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shop
+spec:
+  gatewayClassName: nginx
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+
+---
+# HTTP Route
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: books
+spec:
+  parentRefs:
+    - name: shop
+  hostnames:
+    - "shop.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: books
+          port: 80
+```
+
+## Scheduling
+
+`kube-scheduler` handles evaluation of state of noes and assigning pods to the respective nodes. It does this based on resource availability, constraints and user-defined policies.
+
+There are three evaluation steps the scheduler takes when the API server receives a request to create a Pod:
+
+1. Filtering (scheduler identifies nodes that pass resource requirements)
+   a. Filters can be customized with scheduling profiles
+1. Scoring (The filtered nodes are ranked based on criteria like resource availability, affinity rules, and policies)
+1. Assignment (The highest-scoring node is selected and the Pod spec is sent to the kubelet running on that node)
+
+You can influence scheduling decisions by adapting:
+
+- Pod Priority and Preemption
+  - Define a PriorityClass in the Cluster
+  - Assign the PriorityClass to the Pod in its spec
+  - The scheduler might evict lower priority pods for higher ones
+- Labels applied to nodes and podes can control where pods are scheduled
+- Taints and Tolerations
+  - Taints mark nodes to repel nodes
+  - Tolerations allow pods to run on tainted nodes
+  - Useful for prevention of running pods on certain nodes
+- Affinity and Anti-Affinity (using labels)
+  - Node-Affinity: Encourage or require a pod to be scheduled on a node with a specific label (e.g. run only in a specific region)
+  - Pod Affinity: Encourage pods to be scheduled near other pods (e.g. to reduce latency)
+  - Pod Anti-Affinity: Prevent pods from being scheduled on the same node as other pods (e.g. to spread replicas for HA)
+  - Some rules are "soft", others "hard" (might be indicated by name "required" vs "preferred")
+
+Kubernetes also supports multiple and custom schedulers that are deployed as pods into the cluster. Other pods that should use the custom scheduler an be configured with the `schedulerName` field.
+
+To configure the scheduler K8s uses plugins. These plugins can be enabled or disabled at different extension points. Example plugins include `NodeResourcesFit` to check for resources on a node and `TaintToleration` to evaluate taints and tolerations.
+
+The extension points are specific stages in the scheduler workflow:
+
+- `queueSort` - before pods are scheduled they wait in a queue, `queueSort` determines the order of processing
+- `preFilter`, `filter`, `postFilter` for evaluating before during and after the filter stage
+- `preScore`, `score` to influence the scoring before or during the scoring stage
+
+The actual scheduling plugins are:
+
+- `ImageLocality` (`score`) to prefer node that have the container images cached locally
+- `TaintToleration` (`filter, preScore, score`)
+- `NodeName` (`filter`) to filter out specific nodes, fully bypassing the scheduloer logic
+- `NodePorts` (`preFilter`, `filter`) to ensure the node ha s the available ports
+- `NodeAffinity` (`filter`, `score`)
+- `PodTopologySpread` (all but `postFilter`) to ensure even distribution across topology domains (e.g. zones)
+- `NodeUnschedulable` (`filter`) prevents pods on the node completely
+- `NodeResourcesFit` (`filter, score`)
+- `NodeResourcesBalancedAllocation` (`score`) to favor a more balanced resource usage after pod scheduling
