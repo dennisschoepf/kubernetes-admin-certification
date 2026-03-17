@@ -1252,3 +1252,5 @@ Tolerations consist of more fields:
 - `operator` = `Equal` or `Exists` (exists matches the key, value can be omitted)
 - `effect` same as for taints
 - `tolerationSeconds` only for `NoExecute` taints to specify how long a Pod can remain tainted before eviction
+
+Show labels and taints for nodes with: `kubectl describe nodes |grep -A5 -i label|taint`. Apply a label with that can then be used
