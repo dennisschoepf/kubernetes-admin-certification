@@ -1140,7 +1140,14 @@ The extension points are specific stages in the scheduler workflow:
 - `preFilter`, `filter`, `postFilter` for evaluating before during and after the filter stage
 - `preScore`, `score` to influence the scoring before or during the scoring stage
 
-The actual scheduling plugins are:
+For custom profiles, the following can be used as well for additional actions:
+
+- `reserve` to reserve resources before binding
+- `permit` approves or denies scheduling based on custom policies
+- `preBind`, `bind`, `postBind` - Perform tasks before, during, or after binding of the pod
+- `multiPoint` for plugins that should operate across multiple extension points
+
+The actual scheduling plugins of the standard scheduler are:
 
 - `ImageLocality` (`score`) to prefer node that have the container images cached locally
 - `TaintToleration` (`filter, preScore, score`)
@@ -1151,3 +1158,97 @@ The actual scheduling plugins are:
 - `NodeUnschedulable` (`filter`) prevents pods on the node completely
 - `NodeResourcesFit` (`filter, score`)
 - `NodeResourcesBalancedAllocation` (`score`) to favor a more balanced resource usage after pod scheduling
+
+You can configure multiple scheduling profiles that use a different set of plugins:
+
+```yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+  - schedulerName: default-scheduler
+  - schedulerName: custom-scheduler
+    plugins:
+      preFilter:
+        disabled:
+          - name: "*"
+      filter:
+        disabled:
+          - name: "*"
+      postFilter:
+        disabled:
+          - name: "*"
+```
+
+This file defines a `custom-scheduler` in addition to the `default-scheduler` that disables all plugins for every step. You can apply this configuration with: `$ kube-scheduler --config=/path/to/scheduler-config.yaml` or store it in a configMap and use it in the relevant file.
+
+It makes sense to apply different scheduling rules for different workloads (e.g. latency-sensitive apps vs batch jobs), avoid multiple schedulers if possible as they add complexity, rather customize plugin behavior.
+
+### PodSpecs for granular pod scheduling control
+
+These options in the `PodSpec` control how the pod is scheduled:
+
+- `nodeName` to bypass the scheduler completely and assign a Pod to a specific node
+- `nodeSelector` to assign pod only to nodes that have specific labels (e.g. in a certain region) - Note: All selectors must match! The pod stays pending if no node is available!
+- `podAffinity`, `podAntiAffinity` (soft) to control affinity
+- `taints` to mark nodes, `tolerations` on pods to ignore taints
+- `schedulerName` to use a custom scheduler
+
+They can be applied in the Pod's configuration:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-pod
+spec:
+  containers:
+    - name: redis
+      image: redis
+  nodeSelector:
+    net: fast
+```
+
+To control affinity, use:
+
+- `requiredDuringSchedulingIgnoredDuringExecution`, `preferredDuringSchedulingIgnoredDuringExecution` to only run scheduling when placing the pod but not updating the pod if conditions change afterwards
+- `podAffinity`, `podAntiAffinity`, either keep pods together or spreading them out
+
+In a configuration file, that specifies that the pod should run close to other pods with the label `security=S1` this would look like this:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  affinity:
+    podAffinity: # or podAntiAffinity
+      requiredDuringSchedulingIgnoredDuringExecution: # or preferred
+        # could add weight for `preferred`
+        - labelSelector:
+            matchExpressions:
+              - key: security
+                operator: In
+                values:
+                  - S1
+```
+
+The same options are valid for `nodeAffinity` to apply the rules to nodes.
+
+### Taints and Tolerations
+
+Taints consist of a key, value and effect, where k/v are arbitrary. Tolerations must match the taints. Effects can be:
+
+- `NoSchedule` -> prevents the pods from being scheduled on the tainted node (unless toleration exists). Use case is for specific workloads on a node, e.g. control plane tasks
+- `PreferNoSchedule` (soft) -> Use for temporary issues
+- `NoExecute` -> Evicts existing pods, usable e.g. for critical node issues (hardware failure)
+
+Taints for which the pod also has tolerations are going to be ignored.
+
+Tolerations consist of more fields:
+
+- `key`
+- `value`
+- `operator` = `Equal` or `Exists` (exists matches the key, value can be omitted)
+- `effect` same as for taints
+- `tolerationSeconds` only for `NoExecute` taints to specify how long a Pod can remain tainted before eviction
