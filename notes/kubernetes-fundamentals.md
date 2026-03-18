@@ -1254,3 +1254,134 @@ Tolerations consist of more fields:
 - `tolerationSeconds` only for `NoExecute` taints to specify how long a Pod can remain tainted before eviction
 
 Show labels and taints for nodes with: `kubectl describe nodes |grep -A5 -i label|taint`. Apply a label with that can then be used
+
+## Logs and Troubleshooting
+
+Use standard linux tools for diagnosing problems as K8s runs on standard linux nodes. Because many pods lack shells, you can deploy a temporary pod with a lightweight image like `busybox` to run diagnostic commands.
+
+Network issues often stem from DNS misconfigurations, debug them with `dig` or `nslookup` and check config files like `/etc/resolv.conf`. `tcpdump` can be used in a debug pod to capture and analyze network traffic.
+
+Use the Kubernetes metrics server as well as tools like `prometheus` and `grafana` for monitoring and `fluentd` of `fluentbit` for logging.
+
+The general troubleshooting steps are:
+
+1. Check CLI errors (e.g. logs when running `kubectl apply ...`)
+2. Inspect pod status (`kubectl get pods`, `kubectl describe pod ...`) and logs `kubectl logs <pod-name`)
+3. Access shell for troubleshooting, if the container has a shell: `kubectl exec -it <pod>  -- /bin/bash`
+4. If no container in the pod has a shell deploy a temporary pod `kubectl create deployment busybox_pod --image=busybox -- sleep 3600` and access the shell like in 3.
+5. Investigate network issues `kubectl exec -it <pod-name> -- nslookup <service-name>`, or deeper issues with `kubectl exec -it <debug-pod-name> -- tcpdump -i eth0`
+6. Check security settings (roles, ...): `kubectl auth can-i <action> <resource> --as=<user>` and in a PodSpec the field `securityContext.seLinuxOptions`
+7. Examine Node Logs and Resources: `kubectl get nodes`, `kubectl describe node ...`, `kubectl top nodes` or connect directly via SSH to the node
+8. Enable and review API server auditing -> Check audit logs for relevant events (e.g. failed API calls)
+9. Troubleshoot the control plane and controllers: `kubectl logs -n kube-system <controller-pod-name>`
+10. Check Inter-Node Networking: `kubectl exec -it <debug-pod-name>  -- ping <other-node-ip>`
+11. Check CNI/networking plugins: `kubectl get pods -n kube-system | grep <cni-plugin>`
+
+### Commands
+
+You can find log files of the apiserver with: `sudo find / -name "*apiserver*log"`.
+
+### Ephemeral Containers
+
+Are temporary containers you can attach to an existing pod to perform diagnostic tasks. They are added dynamically via an API call and are not restarted automatically if they exist. They also cannout use certain pod resoures, ports, volume mounts, resource limits, so that they do not interfere with the pods primary workload. You can not create them with `kubectl edit`. Caution, they could change the environment slightly.
+
+To add an ephemeral container, use the `kubectl debug <pod-name> --image=debian` command. You can use `--attach` to immediately connect to the shell.
+
+### Cluster Start Sequence
+
+On cluster start, the K8s init system is started and initializes core components like the kube-apiserver, kube-controller-manager and the kube-scheduler. When using `kubeadm` to create a cluster the process is managed by systemd.
+
+The start sequence begins with the kubelet on each node that reads configuration files and starts essential pods to form the control plane. Its status can be checked with `systemctl status kubelet.service` (or `journalctl`).
+
+A kubelets behavior is defined in its configuration files, typically in `/etc/systemd/system/kubelet.service.d/10-kubeadm.conf` and `/var/lib/kubelet/config.yaml`. For pods that should always be run the kubelet looks at the `staticPodPath` (`/etc/kubernetes/manifests/`). These are always started without the need to go through the scheduler. Examples include the apiserver pod, etcd pod, kube-controller-manager pod and the kube-scheduler pod.
+
+### Monitoring
+
+Default is `metrics-server` which has to be installed, then exposes a standard API at `/apis/metrics.k8s.io` that other components can consume.
+
+### Krew
+
+`krew` can be used to extend `kubectl` with plugins. For it to work add its plugin path to `PATH`: `export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"`. Search for plugins with: `kubectl krew search` and install them with: `kubectl krew install tail`. Afterwards plugins behave like subcommands, e.g. `kubectl tail`.
+
+### Sniffing traffic with wireshark
+
+`krew install sniff` to install. Make sure that wireshark is installed on a computer that has a graphical display environment. You can start sniffing with `kubectl sniff nginx-123456-abcd -c webcont`.
+
+### Kubernetes logging tools
+
+Access the logs of a specific pod with `kubectl logs`. For cluster-wide logging, logs are typically aggregated from all nodes and sent to a centralized system for storage, e.g. with the ELK stack. These can be deployed in the cluster with helm charts. You would need to configure logstash to collect logs from kubernetes nodes.
+
+Another option is to use OpenSearch. You would use Fluentd, or Fluent Bit (more lightweight).
+
+## Custom Resource Definitions
+
+Custom Resources are extensions of the Kubernetes API that let you define new types of objects. They can be created with Custom Resource Definitions (yaml files) without writing a new API server. Another option is to use Aggregated APIs, for which you would need to write and deploy a custom API server that integrates with `kube-apiserver`.
+
+CRDs behave like built-in resources (you can use kubectl, permissions, ...). They can be namespaced or cluster-scoped. An example for a custom resource could be this:
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: backups.stable.linux.com
+spec:
+  group: stable.linux.com # Defines the API group
+  versions:
+    -name: v1
+      ……
+    scope: Namespaced
+    names:
+      plural: backups # used in api endpoints to reference the crd
+      singular: backup # used for single resource references
+      shortNames:
+        - bks # short name e.g. used in kubectl
+      kind: BackUp # name used in resource manifests
+```
+
+You could also define validation rules in the CRD so that the controller setting up an object validates that the values are in a correct format.
+
+If you have defined a custom resource definition you can create objects that follow its rules, for the example above:
+
+```yaml
+apiVersion: stable.linux.com/v1
+kind: BackUp
+metadata:
+  name: a-backup-object
+  namespace: default
+spec:
+  timeSpec: "* * * * */5"
+  image: linux-backup-image
+replicas: 5
+```
+
+Custom Resources can be enhanced with hooks to manage their lifecycle and validation schemas to enforce configuration rules. E.g. you can use a finalizer (async hook) to perform cleanup tasks before a custom resource is deleted:
+
+```yaml
+apiVersion: stable.linux.com/v1
+kind: BackUp
+metadata:
+  name: a-backup-object
+  namespace: default
+  finalizers:
+    - finalizer.stable.linux.com
+spec:
+  timeSpec: "* * * * */5"
+  image: linux-backup-image
+  replicas: 5
+```
+
+For validation rules you can use OpenAPI v3 schema:
+
+```yaml
+apiVersion: stable.linux.com/v1
+kind: BackUp
+metadata:
+  name: a-backup-object
+  namespace: default
+  finalizers:
+    - finalizer.stable.linux.com
+spec:
+  timeSpec: "* * * * */5"
+  image: linux-backup-image
+  replicas: 5
+```
