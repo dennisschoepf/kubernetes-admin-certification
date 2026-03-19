@@ -1385,3 +1385,221 @@ spec:
   image: linux-backup-image
   replicas: 5
 ```
+
+## Security
+
+Kubernetes secures access to the `kube-apiserver` by authenticating and authorizing (by default with RBAC) requests. After those steps there are admission controllers that are able to intercept and validate requests to the API server, allowing you to inspect, modify, or rejest requests before processing (e.g. for resource limits or to validate configurations).
+
+Lastly, security contexts define runtime security settings for pods. Pod security standards enforce baeline policies, like preventing privileged containers.
+
+All communication with the API server is encrypted using TLS, which requires properly configured SSL certificates (`kubeadm` handles it on cluster setup for you).
+
+### Considerations
+
+- At the design phase, ensure the underlying hardware is robust (trusted, verify firmware, hardened OS)
+- After, secure the API server with RBAC, client certificates, audit logging
+- After, secure communication between components, e.g. with NetworkPolicies for Pod-To-Pod traffic, firewalls and encrypted traffic between pods using a service mesh
+- Improve container security by using minimal base images, enforcing immutability and doing static and runtime checks and scanning images (trivy/clair/falco)
+
+Follow the security lifecycle:
+
+1. Assessment
+2. Prevention
+3. Detection
+4. Response
+
+### Authentication
+
+Ensures that every request comes from a verified user, service account, or component. K8s supports authentication with certificates, tokens, static password files, or basic auth. Webhooks can be used to verify bearer tokens or external providers with OIDC. The auth method is defined when starting the API server.
+
+The Kubernetes API does not create or store user accounts, identities should be managed externally. Processes and Pods often use service accounts to access the API, these are managed by Kubernetes itself and the recommended way for workloads to communicate with the control plane.
+
+Best practices for authentication include:
+
+- Disabling anonymous access
+- Using strong authentication methods (client certificates, or OIDC for production clusters)
+- Secure token files with restrictive permissions
+- Verify Authentication with `kubectl --token`, or `kubectl --user`
+- Monitor audit logs (by enabling `--audit-policy-file`) to track authentication attempts
+
+### Authorization
+
+Several authorization modes are supported:
+
+- RBAC (default, primary)
+- Webhook (primary) to delegate decisions to an external service
+- AlwaysDeny, for testing or locking down a cluster during troubleshooting
+- AlwaysAllow, also sometimes used for testing
+
+When evaluating requests the authz system checks its attributes (namespace, user/group, resource type, verb) against the configured policies. If an allow rule is matched, it proceeds, otherwise it is denied.
+
+Best Practices:
+
+- Use RBAC by default
+- Define granular roles (least permissions necessary)
+- Avoid AlwaysAllow
+- Test Policies in a test cluster to test RBAC roles
+- Monitor access in `--audit-policy-file`
+
+Set values for authorization with: `kubectl config set-credentials -h`.
+
+#### RBAC
+
+- `Subjects` -> Entities that can be bound to roles (users, groups, service accounts)
+- `Rules` to define which verbs can be performed on which resources
+- `Roles` -> A collection of rules within a namespace
+- `ClusterRoles` -> Cluster-wide roles
+- `RoleBindings`, `ClusterRoleBindings` to bind specific roles to subjects
+
+As users are not Kubernetes API objects, they have to be set up externally, afterwards bindings can be applied.
+
+Workflow for establishing RBAC:
+
+1. Choose or create a namespace
+2. Create credentials for user
+3. Set the user context in the cluster
+4. Define a role with certain rules
+5. Bind the user to the role with a RoleBinding
+6. Verify that authz for the user is working
+
+### Admission Controllers
+
+Final gatekeepers of the API request process. They can validate, modify, or reject requets after authentication and authorization, but before the requested object is persisted. Through mutating API requests features like adding default values, injecting sidecar containers, or updating resource specifications are possible.
+
+They can be used to enforce cluster-wide policies (e.g. resource quotas, or security standards). Certain admission controllers can be enabled or disabled at runtime with flags:
+
+- `NamespaceLifecycle` to prevent object creation in non-existent namespaces and ensures cleanup for deleted namespaces
+- `LimitRanger` to enforce resource limits
+- `ResourceQuota` to ensure that objects adhere to namespace resource quotas
+- `PodSecurity` to e.g. prevent privileged containers
+
+Adapt these in the manifests for the `apiserver` or by using kubeadm.
+
+### Security Contexts
+
+Can be applied to pods and containers to define specific constraints inside a container to limit what certain processes can do. They can be applied to the pod level (valid for all containers in a pod) or at the container level (only one container). Common settings are:
+
+- `UID/GID` to specify which Linux user the process should run as
+- `fsGroup` to control access to mounted volumes
+- Linux capabilities to fine-tune kernel-level privileges (only at the container level)
+- `runAsNonRoot` to not run as root
+
+If some security context might be invalidated (e.g. if a container tries to run as root on `runAsNonRoot`) the startup of the container is blocked.
+
+An example of certain capabilities is:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+spec:
+  containers:
+    - name: nginx
+      image: nginx
+      securityContext:
+        runAsNonRoot: true
+        capabilities:
+          add:
+            - NET_ADMIN
+            - SYS_TIME
+```
+
+### Network Policies
+
+By default all pods can communicate with each other and all ingress and egress traffic is allowed. NetworkPolicies allow defining rules that can control which pods can communicate with which pods and which external endpoints. Note: Not all CNI providers support network policies.
+
+A workflow would be to `default-deny` all traffic and then use specific policies to only allow ingress/egress that is desired.
+
+The elements of a `NetworkPolicy` are:
+
+- Namespace scope
+- Pod selectors
+- Ingress/Egress rules
+
+An ingress/egress policy could look like this:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-egress-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 172.17.0.0/16
+            except:
+              - 172.17.1.0/24
+        - namespaceSelector:
+            matchLabels:
+              project: myproject
+        - podSelector:
+            matchLabels:
+              role: frontend
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/24
+      ports:
+        - protocol: TCP
+          port: 5978
+```
+
+It restricts traffic for pods in the `default` namespace and only applies to pods that match the label `role=db`. It allows traffic from the cidr range `127.17.0.0/16`, except for its subnet `127.17.1.0/24`. It also allows traffic from any pod in the namespace `project: myproject` and for all pods with the label `role: frontend`. In all cases, traffic is only allowed for `TCP 6379`.
+
+For egress outbound TCP traffic on port 5798 to ip addresses in the 10.0.0.0/24 range is allowed.
+
+If `policyTypes.Ingress/Egress` is empty, it will deny all traffic in that direction for the selected pods. This can make sense, but it is often better to use the `default deny` policy, that looks like this:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+```
+
+NetworkPolicies support `matchExpressions` for `podSelector` for more advanced selecting (e.g. `env` `In` `prod` or `staging`).
+
+## High Availability
+
+A HA cluster uses multiple control plane nodes and distributed etcd. As long as at least one control plane node runs and the `etcd` maintains quorum (a majority of nodes agreeing on the data) the cluster continues to function.
+
+`kubeadm` simplifies setting up a HA cluster by supporting stacked (collocated) or external etcd deployments. A minimum of three control plane nodes is recommeded, any odd number can be used though.
+
+The benefits of a HA setup are:
+
+- Minimized downtime
+- Improved Reliability (configure a TCP pass-through load balancer to evenly distribute traffic on control plane nodes)
+- Seamless Recovery (regularly test failover scenarios)
+- Scalability and Resilience (use tools like cluster autoscaler to dynamically add or remove worker nodes)
+
+### Collocated databases
+
+Each control plane node runs both the control plane components as well as an etcd instance. Minimum three nodes are required.
+
+### Non-collocated databases
+
+Separate etcd from the control plane nodes. This reduces the impact of losing a single node because etcd remains available. It needs more infrastructure though and is more complex but has better resiliency. The process is as follows:
+
+1. Set up the external etcd cluster
+2. Prepare certificates (using `openssl` or a CA)
+3. Configure `kubeadm` for etxternal `etcd`
+4. Initialize control plane nodes
+5. Join worker nodes
+6. Verify the cluster
