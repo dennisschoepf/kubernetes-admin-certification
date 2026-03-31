@@ -173,3 +173,37 @@ To apply some permissions in multiple namespaces, use a clusterrole but apply a 
 ## Helm
 
 - Make sure that helm is installed, add the repo for the package and search with `helm search repo`
+
+## User Management
+
+First, create a token (e.g. 4096 RSA) with `openssl genrsa -out user.key 4096`
+Afterwards, create a CSR `openssl req -new -key user.key -out user.csr -subj="/CN=user/O=org"`. Then, create a CertificateSigningRequest in Kubernetes:
+
+```sh
+cat > /root/gameforge-onboarding/siddhi-csr.yaml <<EOF
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: user
+spec:
+  request: $(cat user.csr | base64 | tr -d "\n")
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 31536000  # 1 year (365 days)
+  usages:
+  - client auth
+EOF
+```
+
+With this you can use `k certificate approve NAME` to approve the CSR. To then read out the decoded certificate: `kubectl get csr NAME -o jsonpath='{.status.certificate}' | base64 -d `
+
+You can verify the certificate with `openssl x509 -in user.crt -text -noout`. Finally you can add the user entry with `k config set-credentials USER --client-certificate ... --client-key ...`. Use `--embed-certs` to embed the certificates in kubeconfig. You can export a kubeconfig file with: `k config view --minify --flatten --context=CONTEXT`
+
+## Testing communication between services
+
+1. Use internal hostnames: `SERVICE.NAMESPACE.svc.cluster.local`
+
+### Misc
+
+#### Secrets within pods
+
+Check if e.g. a service account token is mounted to a pod with: `kubectl exec POD -- cat /var/run/secrets/kubernetes.io/serviceaccount/token`.
